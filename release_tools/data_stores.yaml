@@ -1,0 +1,179 @@
+# D1b — data snapshot licensing worksheet.
+#
+# The product can obtain its databases two ways: SNAPSHOT (download stores the owner has
+# published) or REBUILD (the user re-runs the ingest with their own API credentials). Rebuild
+# is always legal — the user pulls their own data under their own accounts. Snapshot means
+# REDISTRIBUTING data obtained under someone else's terms, which is a per-source question.
+#
+# This file is the answer to that question, store by store. `release_data.py` reads it and
+# refuses to package anything whose `ship` is not `yes`. Until `signed_off` is true, the only
+# thing the packager will do is --dry-run.
+#
+# HOW TO FILL IT IN: for each store, check the licence of every source listed under it. The
+# most restrictive source governs the whole store, because the stores are not separable —
+# pricemodeling.db is one SQLite file containing all of them. Set `ship: yes` only when every
+# source in that store permits redistribution. A `no` is not a failure: that store simply
+# becomes rebuild-only, and the wizard tells the user so.
+#
+# NOTHING HERE IS LEGAL ADVICE. The licence fields record what to check and where; the
+# decision is the owner's.
+
+signed_off: false
+signed_off_by: null
+signed_off_date: null
+
+# Where each store lives, relative to the upstream working copy, unless `home: true`.
+stores:
+
+  - key: pricemodeling_db
+    path: data/pricemodeling.db
+    approx_size: 16.5 GB
+    description: >-
+      The hourly master SQLite database. One file containing every ingested source, so its
+      shippability is the intersection of all of them.
+    sources:
+      - name: Meteo-France SYNOP
+        licence: Licence Ouverte / Etalab 2.0
+        url: https://donneespubliques.meteofrance.fr
+      - name: RTE (data.rte-france.com)
+        licence: check the API terms accepted with the account
+        url: https://data.rte-france.com
+      - name: ENTSO-E Transparency
+        licence: ENTSO-E Transparency Platform terms of use — check the redistribution clause
+        url: https://transparency.entsoe.eu
+      - name: ENTSO-E REMIT (unavailability)
+        licence: as ENTSO-E Transparency
+      - name: Elexon BMRS Insights
+        licence: BMRS / Elexon open data terms
+        url: https://bmrs.elexon.co.uk
+      - name: ECB reference rates
+        licence: free reuse with attribution
+        url: https://data.ecb.europa.eu
+      - name: Plant registries (MaStR, ODRE, OPSD, REPD)
+        licence: see the registry stores below — all land in this database too
+    ship: pending
+    notes: >-
+      The single biggest download and the one that makes onboarding fast. If any one source
+      forbids redistribution, consider whether a reduced database (derived aggregates only,
+      no raw third-party series) would be shippable instead.
+
+  - key: raw_extracts
+    path: data/raw
+    approx_size: 4.9 GB
+    description: Unmodified payloads exactly as the providers returned them.
+    sources:
+      - name: SYNOP csv.gz, RTE JSON, registry downloads
+        licence: as the corresponding provider above
+    ship: pending
+    notes: >-
+      Verbatim third-party payloads — the least likely category to be redistributable, and
+      the least necessary: it is a cache, and the database built from it is what users need.
+      Recommend `no` unless there is a positive reason.
+
+  - key: era5
+    path: data/era5
+    approx_size: 4.1 GB
+    description: ERA5 reanalysis extracted for the weather-generator stations.
+    sources:
+      - name: Copernicus Climate Data Store — ERA5
+        licence: Licence to use Copernicus Products
+        url: https://cds.climate.copernicus.eu
+    ship: pending
+    notes: >-
+      The Copernicus licence is permissive but has attribution and modification-notice
+      conditions. Note the practical stake: without this store, the first weathergen or RES
+      fit pulls roughly 4 GB from CDS, taking hours and consuming the user's CDS quota.
+
+  - key: cmip6
+    path: data/cmip6
+    approx_size: 38 MB
+    description: >-
+      CMIP6 climate deltas. Small, and now on the critical path: the product ships the
+      climate trend ON, so a user without these cannot run a trended projection until the
+      CDS fetch completes.
+    sources:
+      - name: Copernicus CDS — CMIP6 (MPI-ESM1-2-LR)
+        licence: Licence to use Copernicus Products + the CMIP6 model's own terms
+    ship: pending
+
+  - key: lake
+    path: data/lake
+    approx_size: 68 MB
+    description: Parquet lake — derived tables, plus the plant registry layer.
+    sources:
+      - name: derived from pricemodeling.db and the registries
+        licence: inherits from its inputs
+    ship: pending
+
+  - key: duckdb
+    path: data/powersim.duckdb
+    approx_size: small
+    description: DuckDB catalog over the lake.
+    sources:
+      - name: derived
+        licence: inherits from the lake
+    ship: pending
+
+  - key: weathergen_output
+    path: weathergen/output
+    approx_size: 1.3 GB
+    description: simulation.nc — a simulated weather trajectory. The owner's model output.
+    sources:
+      - name: weathergen output, fitted on ERA5 + SYNOP
+        licence: owner's own work, derived from the above
+    ship: pending
+    notes: Most likely shippable category — synthetic output, not third-party data.
+
+  - key: model_fits
+    path: "*/models"
+    glob: true
+    approx_size: varies
+    description: >-
+      Fitted model objects (weathergen fitted.json, demand/res/availability calibrations,
+      cmip6_deltas_*.npz). Pure model parameters.
+    sources:
+      - name: owner's fitted parameters
+        licence: owner's own work
+    ship: pending
+    notes: >-
+      Shipping these turns a multi-hour first-run calibration into a download, and makes a
+      user's numbers match the owner's reference exactly.
+
+  - key: dispatch_reports
+    path: dispatch_model/reports
+    approx_size: 61 MB
+    description: Projection outputs and the fitted markup wedge.
+    sources:
+      - name: owner's model output
+        licence: owner's own work
+    ship: pending
+    notes: >-
+      CAREFUL — markup_model.json inside this directory is TRACKED and ships with the code
+      release. The packager excludes tracked files, so it will not be duplicated here.
+
+  - key: mastr_bulk
+    path: .open-MaStR
+    home: true
+    approx_size: 7.5 GB
+    description: >-
+      The open-mastr bulk download, under the user profile. Not relocatable
+      (os.path.expanduser), so it is its own store with its own uninstall question.
+    sources:
+      - name: Marktstammdatenregister (Bundesnetzagentur)
+        licence: Datenlizenz Deutschland — Namensnennung 2.0
+        url: https://www.marktstammdatenregister.de
+    ship: pending
+    notes: >-
+      7.5 GB to save the user a ~3 GB download plus a long import. Datenlizenz Deutschland
+      2.0 is permissive with attribution, which makes this a plausible `yes`.
+
+# Stores deliberately NEVER packaged, regardless of licensing.
+excluded:
+  - path: dispatch_model/scratchpad
+    reason: >-
+      Monte-Carlo weather cubes and one-off probes — 1.5 GB of regenerable scratch, and
+      upstream's .gitignore calls it throwaway. Users regenerate it per run.
+  - path: "**/era5_cache"
+    reason: Raw download cache; the ingested data is in the stores above.
+  - path: "**/__pycache__"
+    reason: Build artifacts.
