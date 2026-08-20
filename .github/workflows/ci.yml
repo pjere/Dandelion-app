@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dev tooling
+        run: python -m pip install --disable-pip-version-check -q pytest ruff
+
+      # The rule that keeps the product independent of the owner's machine.
+      - name: Path guard
+        run: python release_tools/path_guard.py --root .
+
+      - name: Lint
+        run: ruff check .
+
+      # Static checks only. Anything that needs a real upstream release - the inventory
+      # selftest and the undeclared-import scan - runs in the release workflow, because
+      # pjere/Dandelion is private and this job holds no token for it.
+      - name: Tests
+        run: python -m pytest tests -q
+
+      - name: Job registry loads
+        run: python drivers/inventory.py --json > registry.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: job-registry
+          path: registry.json

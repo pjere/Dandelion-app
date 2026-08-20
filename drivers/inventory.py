@@ -1,0 +1,666 @@
+"""The single place where knowledge of the upstream codebase lives.
+
+Every invocation the product ever makes of pjere/Dandelion is a Job declared here:
+what to run, from which working directory, which credentials it needs, how to tell
+success from failure, and what it produces. Nothing else in the product may hardcode
+an upstream command. When the owner cuts a new code release, this file and
+`anchoring.py` are the only things that should need to change.
+
+Verified against a fresh clone of pjere/Dandelion @ 09a2459 (2026-08-20).
+
+    python drivers/inventory.py --list
+    python drivers/inventory.py --selftest --code-root <dir> --python <venv-python>
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+
+# --------------------------------------------------------------------------------------
+# Progress
+# --------------------------------------------------------------------------------------
+# powersim_core/progress.py renders an in-place bar ONLY on a TTY. Under a pipe - which is
+# how the job engine always runs upstream - it emits plain lines instead, at most one every
+# `min_interval` seconds (default 30) plus always the first and the last. That is what makes
+# honest GUI progress possible without upstream changes. POWERSIM_NO_PROGRESS must stay unset.
+
+#: `_rate()` renders exactly one of: "?", "<n> s/it", "<n> min/it". Pinning those three
+#: shapes keeps the greedy tail out of the note, which is separated by two spaces.
+_RATE = r"(?:\?|[\d.]+\s(?:s|min)/it)"
+
+PROGRESS_RE = re.compile(
+    r"^\[(?P<label>[^\]]+)\]\s+"
+    r"(?P<done>\d+)/(?P<total>\d+)\s+(?P<pct>\d+)%\s+"
+    r"elapsed\s+(?P<elapsed>[\d:]+)\s+eta\s+(?P<eta>(?:[\d:]+|--:--:--))\s+"
+    rf"(?P<rate>{_RATE})"
+    r"(?:\s\s+(?P<note>.*))?$"
+)
+
+#: Same module, `total <= 0` branch: no bar, no ETA, just a count.
+PROGRESS_COUNTER_RE = re.compile(
+    rf"^\[(?P<label>[^\]]+)\]\s+(?P<done>\d+)\s+done\s+elapsed\s+(?P<elapsed>[\d:]+)\s+"
+    rf"(?P<rate>{_RATE})(?:\s\s+(?P<note>.*))?$"
+)
+
+#: Progress labels upstream actually emits, and where they come from.
+PROGRESS_LABELS = {
+    "weathergen fit": "weathergen/weathergen/cli.py:25 (6 fixed phases)",
+    "availability draws": "availability_model/.../projection/engine.py:159",
+    "backtest {year}": "dispatch_model/.../rolling/backtest.py:365",
+    "{year} windows": "dispatch_model/.../rolling/projection.py:435 (inner loop)",
+    "projection {start}-{end}": "dispatch_model/scripts/run_projection_20y.py:76 (outer loop)",
+    "deliverables": "dispatch_model/scripts/build_projection_deliverables.py:275",
+    "monte-carlo {n} draws": "dispatch_model/scripts/run_montecarlo.py:136",
+}
+
+
+class Kind(Enum):
+    CONSOLE = "console"   # a console script installed by the package
+    MODULE = "module"     # python -m <pkg>
+    SCRIPT = "script"     # python <path> from inside the release tree
+    WRAPPER = "wrapper"   # our own thin wrapper: upstream exposes only library functions
+
+
+class Stage(Enum):
+    ADMIN = "admin"
+    DATA = "data"
+    MODELS = "models"
+    PROJECTION = "projection"
+    QUALITY = "quality"
+
+
+@dataclass(frozen=True)
+class Job:
+    """One upstream invocation, fully specified."""
+
+    id: str
+    title: str
+    kind: Kind
+    stage: Stage
+    argv: tuple[str, ...]
+    #: working directory, relative to the extracted code root. Never empty: several
+    #: upstream paths are cwd-relative (see anchoring.Anchor.CWD).
+    cwd: str = "."
+    needs_credentials: tuple[str, ...] = ()
+    progress_label: str | None = None
+    #: stdout patterns that mean the job FAILED even though the exit code is 0.
+    failure_markers: tuple[str, ...] = ()
+    #: stdout patterns that mean the job degraded silently - surface as a warning card.
+    warning_markers: tuple[str, ...] = ()
+    produces: tuple[str, ...] = ()
+    resumable: bool = False
+    notes: str = ""
+    upstream_ref: str = ""
+
+
+# Several pricemodeling commands catch their own exceptions, print a French error line and
+# still exit 0. Exit code alone is therefore NOT a success signal for them.
+ERREUR = (r"^\[ERREUR\]",)
+
+
+JOBS: tuple[Job, ...] = (
+    # ---------------------------------------------------------------- admin
+    Job(
+        id="init-db", title="Initialise the SQLite database",
+        kind=Kind.MODULE, stage=Stage.ADMIN,
+        argv=("{python}", "-m", "pricemodeling", "init-db"),
+        produces=("data/pricemodeling.db",),
+        upstream_ref="pricemodeling/pipeline.py:48",
+    ),
+    Job(
+        id="status", title="Row counts per table",
+        kind=Kind.MODULE, stage=Stage.ADMIN,
+        argv=("{python}", "-m", "pricemodeling", "status"),
+        notes=(
+            "Prints 'Base : <path>' then one line per table. It runs SELECT COUNT(*) on EVERY "
+            "table, which on the 16.5 GB master is a full scan - do NOT put this on the dashboard "
+            "hot path. Per-source freshness comes from direct read-only SQLite queries against "
+            "ingest_log instead."
+        ),
+        upstream_ref="pricemodeling/pipeline.py:224",
+    ),
+    Job(
+        id="rte-token", title="Test the RTE credentials",
+        kind=Kind.MODULE, stage=Stage.ADMIN,
+        argv=("{python}", "-m", "pricemodeling", "rte-token"),
+        needs_credentials=("RTE_CLIENT_ID", "RTE_CLIENT_SECRET"),
+        notes="Wizard credential test. Prints 'OK - jeton obtenu (longueur N)' on success.",
+        upstream_ref="pricemodeling/pipeline.py:55",
+    ),
+
+    # ---------------------------------------------------------------- data
+    Job(
+        id="extract-meteo", title="SYNOP weather observations",
+        kind=Kind.MODULE, stage=Stage.DATA,
+        argv=("{python}", "-m", "pricemodeling", "extract-meteo"),
+        resumable=True,
+        notes="Incremental by month unless --force. No credentials (Meteo-France open data).",
+        upstream_ref="pricemodeling/pipeline.py:67",
+    ),
+    Job(
+        id="extract-rte", title="RTE resources",
+        kind=Kind.MODULE, stage=Stage.DATA,
+        argv=("{python}", "-m", "pricemodeling", "extract-rte"),
+        needs_credentials=("RTE_CLIENT_ID", "RTE_CLIENT_SECRET"),
+        failure_markers=ERREUR,
+        resumable=True,
+        notes=(
+            "Loops over the resources enabled in config/rte_catalog.yaml and CONTINUES past a "
+            "failing resource, printing '[ERREUR] <name>: <exc>' and exiting 0. The job engine "
+            "must scan stdout, not just the exit code."
+        ),
+        upstream_ref="pricemodeling/pipeline.py:91",
+    ),
+    Job(
+        id="extract-entsoe", title="FR day-ahead prices",
+        kind=Kind.MODULE, stage=Stage.DATA,
+        argv=("{python}", "-m", "pricemodeling", "extract-entsoe"),
+        needs_credentials=("ENTSOE_TOKEN",),
+        failure_markers=ERREUR,
+        resumable=True,
+        notes=(
+            "FRANCE ONLY, despite the name - bidding_zone defaults to 10YFR-RTE------C. The other "
+            "twelve zones come from the backfill-entsoe job. Also swallows exceptions and exits 0."
+        ),
+        upstream_ref="pricemodeling/pipeline.py:130",
+    ),
+    Job(
+        id="backfill-entsoe", title="Multi-zone ENTSO-E (prices, load, generation, flows)",
+        kind=Kind.SCRIPT, stage=Stage.DATA,
+        argv=("{python}", "-X", "utf8", "scripts/backfill_entsoe.py", "{years}"),
+        cwd=".",
+        needs_credentials=("ENTSOE_TOKEN",),
+        resumable=True,
+        notes=(
+            "cwd MUST be the code root: DB_URL is the cwd-relative literal "
+            "'sqlite:///data/pricemodeling.db'. Years are positional argv; the default set is "
+            "2019, 2022, 2023, 2024. Idempotent via the ingest_log table, so it resumes."
+        ),
+        upstream_ref="scripts/backfill_entsoe.py",
+    ),
+    Job(
+        id="ingest-remit", title="REMIT outage notifications",
+        kind=Kind.MODULE, stage=Stage.DATA,
+        argv=("{python}", "-m", "pricemodeling", "ingest-remit"),
+        needs_credentials=("ENTSOE_TOKEN",),
+        failure_markers=ERREUR,
+        resumable=True,
+        notes="Feeds step v. Exits 1 with '[ERREUR] ENTSOE_TOKEN manquant dans .env' when unset.",
+        upstream_ref="pricemodeling/pipeline.py:156",
+    ),
+    Job(
+        id="fx-ecb", title="ECB reference rates (GBP)",
+        kind=Kind.WRAPPER, stage=Stage.DATA,
+        argv=("{python}", "-m", "drivers.wrappers.fx", "--start", "{start}", "--end", "{end}"),
+        cwd=".",
+        notes=(
+            "No upstream CLI. Wraps pricemodeling.fx.ingest_fx(engine, start, end). MANDATORY "
+            "PREREQUISITE of elexon-prices: ingest_prices raises ValueError without a "
+            "gbp_per_eur callable, refusing to mix GBP and EUR."
+        ),
+        upstream_ref="pricemodeling/fx.py:53 ingest_fx / :89 rate_fn",
+    ),
+    Job(
+        id="elexon-gb", title="GB / Elexon (generation, load, flows, prices)",
+        kind=Kind.WRAPPER, stage=Stage.DATA,
+        argv=("{python}", "-m", "drivers.wrappers.elexon", "--start", "{start}", "--end", "{end}"),
+        cwd=".",
+        resumable=True,
+        notes=(
+            "No upstream CLI. Wraps pricemodeling.elexon.series.ingest_{generation,flows,load,"
+            "prices}. BMRS Insights is a key-less open API. ingest_prices needs gbp_per_eur="
+            "fx.rate_fn(config,'GBP'), so run fx-ecb first. Prices chunk at 7 days (the endpoint "
+            "rejects 14)."
+        ),
+        upstream_ref="pricemodeling/elexon/series.py:103,140,183,207",
+    ),
+    Job(
+        id="registry-mastr", title="German plant registry (MaStR)",
+        kind=Kind.WRAPPER, stage=Stage.DATA,
+        argv=("{python}", "-m", "drivers.wrappers.registries", "mastr"),
+        cwd=".",
+        notes=(
+            "No upstream CLI and NO upstream orchestration at all - registries expose "
+            "fetch_bulk/load_bulk_to_sqlite/build, and powersim_core.registry.write is called "
+            "only from tests. The product must author the composition; ask the owner to confirm "
+            "the exact sequence that produced the shipped lake. Downloads ~7.5 GB to "
+            "~/.open-MaStR/ (not relocatable)."
+        ),
+        upstream_ref="pricemodeling/registries/mastr.py:37,71,167",
+    ),
+    Job(
+        id="registry-odre", title="French plant registry (ODRE)",
+        kind=Kind.WRAPPER, stage=Stage.DATA,
+        argv=("{python}", "-m", "drivers.wrappers.registries", "odre"),
+        cwd=".",
+        notes="cwd must be the code root: DEFAULT_RAW is the cwd-relative 'data/raw/odre/...'.",
+        upstream_ref="pricemodeling/registries/odre.py:40,67",
+    ),
+    Job(
+        id="registry-opsd", title="Swiss plant registry (OPSD)",
+        kind=Kind.WRAPPER, stage=Stage.DATA,
+        argv=("{python}", "-m", "drivers.wrappers.registries", "opsd"),
+        cwd=".",
+        upstream_ref="pricemodeling/registries/opsd.py:30,40",
+    ),
+    Job(
+        id="registry-repd", title="UK plant registry (REPD)",
+        kind=Kind.WRAPPER, stage=Stage.DATA,
+        argv=("{python}", "-m", "drivers.wrappers.registries", "repd"),
+        cwd=".",
+        upstream_ref="pricemodeling/registries/repd.py:39,67",
+    ),
+    Job(
+        id="reconcile-units", title="Reconcile production units",
+        kind=Kind.MODULE, stage=Stage.DATA,
+        argv=("{python}", "-m", "pricemodeling", "reconcile-units"),
+        produces=("data/reconciliation_report.csv",),
+        upstream_ref="pricemodeling/pipeline.py:179",
+    ),
+    Job(
+        id="build-master", title="Rebuild the hourly master table",
+        kind=Kind.MODULE, stage=Stage.DATA,
+        argv=("{python}", "-m", "pricemodeling", "build-master"),
+        notes="The expensive one. Prints 'Fusion : <stats>'. Run after every ingest.",
+        upstream_ref="pricemodeling/pipeline.py:189",
+    ),
+    Job(
+        id="qc-sources", title="Cross-check RTE against ENTSO-E",
+        kind=Kind.MODULE, stage=Stage.DATA,
+        argv=("{python}", "-m", "pricemodeling", "qc-sources"),
+        notes=(
+            "Render as a table. --strict exits 1 on unexplained divergence; build-master repairs "
+            "RTE gaps silently, so without this a new source defect stays invisible."
+        ),
+        upstream_ref="pricemodeling/pipeline.py:238",
+    ),
+
+    # ---------------------------------------------------------------- models
+    Job(
+        id="weathergen-cmip6", title="Download CMIP6 deltas",
+        kind=Kind.CONSOLE, stage=Stage.MODELS,
+        argv=("weathergen", "-c", "config.yaml", "fetch-cmip6-deltas"),
+        cwd="weathergen",
+        needs_credentials=("CDSAPI_URL", "CDSAPI_KEY"),
+        produces=("weathergen/models/cmip6_deltas_<ssp>_<year>_<model>.npz",),
+        notes="Should run before weathergen-fit when the climate trend is enabled.",
+        upstream_ref="weathergen/weathergen/cli.py:164",
+    ),
+    Job(
+        id="weathergen-fit", title="Fit the weather generator",
+        kind=Kind.CONSOLE, stage=Stage.MODELS,
+        argv=("weathergen", "-c", "config.yaml", "fit"),
+        cwd="weathergen",
+        needs_credentials=("CDSAPI_URL", "CDSAPI_KEY"),
+        progress_label="weathergen fit",
+        warning_markers=(r"^\[trend\] enabled but deltas not found",),
+        notes=(
+            "CORRECTION to the program document: fit does NOT refuse without the CMIP6 deltas. "
+            "It prints '[trend] enabled but deltas not found: <file>. Run fetch-cmip6-deltas "
+            "first.' and CONTINUES with no trend, exiting 0 (cli.py:100-106). Treat that line as "
+            "a warning marker and surface it, or the user silently gets an untrended generator. "
+            "First run also pulls ~4 GB of ERA5 lazily via cdsapi."
+        ),
+        upstream_ref="weathergen/weathergen/cli.py:100-106,155",
+    ),
+    Job(
+        id="weathergen-simulate", title="Simulate weather trajectories",
+        kind=Kind.CONSOLE, stage=Stage.MODELS,
+        argv=("weathergen", "-c", "config.yaml", "simulate"),
+        cwd="weathergen",
+        produces=("weathergen/output/simulation.nc",),
+        upstream_ref="weathergen/weathergen/cli.py:157",
+    ),
+    Job(
+        id="demand-calibrate", title="Calibrate the demand model",
+        kind=Kind.CONSOLE, stage=Stage.MODELS,
+        argv=("demand-model", "-c", "config.yaml", "calibrate"),
+        cwd="demand_model",
+        notes="Needs the demand_model[calib] extra (pygam, statsmodels) in the lock.",
+        upstream_ref="demand_model/demand_model/cli.py:51",
+    ),
+    Job(
+        id="demand-project", title="Project demand",
+        kind=Kind.CONSOLE, stage=Stage.MODELS,
+        argv=("demand-model", "-c", "config.yaml", "project"),
+        cwd="demand_model",
+        upstream_ref="demand_model/demand_model/cli.py:52",
+    ),
+    Job(
+        id="res-calibrate", title="Calibrate the RES conversion chains",
+        kind=Kind.CONSOLE, stage=Stage.MODELS,
+        argv=("res-model", "-c", "config.yaml", "calibrate"),
+        cwd="res_model",
+        needs_credentials=("CDSAPI_URL", "CDSAPI_KEY"),
+        notes="Pulls ERA5 lazily through cdsapi on first fit.",
+        upstream_ref="res_model/res_model/cli.py:48",
+    ),
+    Job(
+        id="res-project", title="Project RES production",
+        kind=Kind.CONSOLE, stage=Stage.MODELS,
+        argv=("res-model", "-c", "config.yaml", "project"),
+        cwd="res_model",
+        upstream_ref="res_model/res_model/cli.py:49",
+    ),
+    Job(
+        id="avail-calibrate", title="Fit plant availability",
+        kind=Kind.CONSOLE, stage=Stage.MODELS,
+        argv=("avail-model", "-c", "config.yaml", "calibrate"),
+        cwd="availability_model",
+        notes="Consumes the REMIT table, so run ingest-remit first.",
+        upstream_ref="availability_model/availability_model/cli.py:48",
+    ),
+    Job(
+        id="avail-project", title="Simulate unit availability",
+        kind=Kind.CONSOLE, stage=Stage.MODELS,
+        argv=("avail-model", "-c", "config.yaml", "project"),
+        cwd="availability_model",
+        progress_label="availability draws",
+        upstream_ref="availability_model/availability_model/cli.py:49",
+    ),
+    Job(
+        id="dispatch-build-inputs", title="Build commodity, neighbour and FR inputs",
+        kind=Kind.CONSOLE, stage=Stage.MODELS,
+        argv=("dispatch-model", "-c", "config.yaml", "build-inputs"),
+        cwd="dispatch_model",
+        notes=(
+            "NOT mentioned in the program document but a real subcommand. Fetches the World Bank "
+            "pink sheet and the ECB FX zip - network access without user credentials."
+        ),
+        upstream_ref="dispatch_model/dispatch_model/cli.py:40",
+    ),
+    Job(
+        id="dispatch-backtest", title="Backtest on a historical year",
+        kind=Kind.CONSOLE, stage=Stage.MODELS,
+        argv=("dispatch-model", "-c", "config.yaml", "backtest", "--year", "{year}"),
+        cwd="dispatch_model",
+        progress_label="backtest {year}",
+        upstream_ref="dispatch_model/dispatch_model/cli.py:44",
+    ),
+
+    # ---------------------------------------------------------------- projection
+    Job(
+        id="dispatch-run", title="Single-year projection",
+        kind=Kind.CONSOLE, stage=Stage.PROJECTION,
+        argv=("dispatch-model", "-c", "{config}", "run", "--year", "{year}"),
+        cwd="dispatch_model",
+        progress_label="{year} windows",
+        notes=(
+            "-c defaults to the cwd-relative 'config.yaml'. For a run bundle, pass the absolute "
+            "path of the run's overlay - and remember that models_dir/reports_dir/output_dir then "
+            "resolve from the OVERLAY's directory (see anchoring.dispatch_reports)."
+        ),
+        upstream_ref="dispatch_model/dispatch_model/cli.py:41",
+    ),
+    Job(
+        id="projection-20y", title="20-year projection",
+        kind=Kind.SCRIPT, stage=Stage.PROJECTION,
+        argv=("{python}", "-u", "-X", "utf8", "-W", "ignore", "scripts/run_projection_20y.py"),
+        cwd="dispatch_model",
+        progress_label="projection {start}-{end}",
+        resumable=True,
+        notes="Horizon comes from config.yaml, not from a flag.",
+        upstream_ref="dispatch_model/scripts/run_projection_20y.py:76",
+    ),
+    Job(
+        id="projection-deliverables", title="Build projection deliverables",
+        kind=Kind.SCRIPT, stage=Stage.PROJECTION,
+        argv=("{python}", "-u", "-X", "utf8", "scripts/build_projection_deliverables.py"),
+        cwd="dispatch_model",
+        progress_label="deliverables",
+        upstream_ref="dispatch_model/scripts/build_projection_deliverables.py:275",
+    ),
+    Job(
+        id="montecarlo", title="Monte-Carlo ensemble (full chain)",
+        kind=Kind.SCRIPT, stage=Stage.PROJECTION,
+        argv=("{python}", "-u", "-X", "utf8", "-W", "ignore", "scripts/run_montecarlo.py",
+              "--draws", "{draws}", "--workers", "{workers}", "--master-seed", "{seed}"),
+        cwd="dispatch_model",
+        progress_label="monte-carlo {n} draws",
+        resumable=True,
+        notes=(
+            "cwd MUST be dispatch_model/: the cube path 'scratchpad/mc/cube_NNN.nc' is resolved "
+            "against cwd while the POWERSIM_WEATHER_CUBE the script exports is built from the "
+            "script location - they agree only there. Flags: --draws --start-draw --out "
+            "--master-seed --keep-cubes --workers --n-weeks. Resumable: a draw whose "
+            "projection_20y_analysis.xlsx exists is skipped. Size workers by RAM, not cores - "
+            "upstream's own anchor is 'about 3' on the dev machine, ~4.5 h per draw with "
+            "flexibility on. Spawns a ProcessPoolExecutor, so cancellation needs a Windows Job "
+            "Object; Popen.terminate() will not reap the grandchildren."
+        ),
+        upstream_ref="dispatch_model/scripts/run_montecarlo.py",
+    ),
+    Job(
+        id="mc-aggregate", title="Aggregate Monte-Carlo draws",
+        kind=Kind.SCRIPT, stage=Stage.PROJECTION,
+        argv=("{python}", "-u", "-X", "utf8", "scripts/mc_aggregate.py"),
+        cwd="dispatch_model",
+        upstream_ref="dispatch_model/scripts/mc_aggregate.py",
+    ),
+    Job(
+        id="sensitivity-ensemble", title="Sensitivity ensemble (dispatch-only)",
+        kind=Kind.WRAPPER, stage=Stage.PROJECTION,
+        argv=("{python}", "-m", "drivers.wrappers.ensemble", "--config", "{config}",
+              "--years", "{years}", "--draws", "{draws}", "--workers", "{workers}"),
+        cwd="dispatch_model",
+        notes=(
+            "Wraps dispatch_model.rolling.montecarlo.run_ensemble(config_path, years, draws, "
+            "ref_year=2019, master_seed=0, n_workers=None, avail_years=None, "
+            "weather_provider=None, n_weeks=None, write_lake=False, parallel=True) and "
+            "ensemble_stats. NOT equivalent to the full chain: one shared ref-year preload, "
+            "weather varies only through weather_provider, no per-draw cube and no step v. "
+            "Present it honestly as a fast sensitivity, not as the Monte-Carlo. ensemble_stats "
+            "returns year, zone, n_draws, ens_mean, ens_p5, ens_p50, ens_p95."
+        ),
+        upstream_ref="dispatch_model/dispatch_model/rolling/montecarlo.py:80,110",
+    ),
+
+    # ---------------------------------------------------------------- quality
+    Job(
+        id="golden-check", title="Golden-harness check",
+        kind=Kind.SCRIPT, stage=Stage.QUALITY,
+        argv=("{python}", "tools/golden.py", "check"),
+        cwd=".",
+        upstream_ref="tools/golden.py",
+    ),
+    Job(
+        id="gate-multiyear", title="Multi-year quality gate",
+        kind=Kind.SCRIPT, stage=Stage.QUALITY,
+        argv=("{python}", "scripts/gate_multiyear.py"),
+        cwd="dispatch_model",
+        upstream_ref="dispatch_model/scripts/gate_multiyear.py",
+    ),
+)
+
+
+# --------------------------------------------------------------------------------------
+# Install-time invariants
+# --------------------------------------------------------------------------------------
+
+#: Console scripts the seven editable installs must put on PATH.
+CONSOLE_SCRIPTS = ("weathergen", "demand-model", "res-model", "avail-model", "dispatch-model")
+
+#: ADR-8 install order. powersim_core and pricemodeling first; the rest depend on them.
+INSTALL_ORDER = (
+    "powersim_core", "pricemodeling", "weathergen",
+    "demand_model", "res_model", "availability_model", "dispatch_model",
+)
+
+#: Imported lazily by upstream, declared in NO pyproject and in no requirements file.
+#: Absent, the offline test suite still passes and real ingestion dies at first use.
+UNDECLARED_IMPORTS = {
+    "cdsapi": "cdsapi",
+    "entsoe": "entsoe-py",
+    "open_mastr": "open-mastr",
+}
+
+#: Declared, but only as OPTIONAL extras - so a lock compiled from `dependencies` alone
+#: omits them and the fit commands fail at runtime.
+REQUIRED_EXTRAS = {
+    "weathergen": ("stats", "viz"),      # statsmodels, scikit-learn, pyextremes, xclim / matplotlib, jinja2
+    "demand_model": ("calib", "viz"),    # pygam, statsmodels
+}
+
+#: Tracked files that live inside a directory the product wants to relocate. They ship with
+#: the release, the code READS them, and a naive junction hides them. Seed and hash-check.
+SEEDED_FROM_RELEASE = (
+    "dispatch_model/reports/markup_model.json",
+    "availability_model/reports/methodology.md",
+)
+
+
+# --------------------------------------------------------------------------------------
+# Selftest
+# --------------------------------------------------------------------------------------
+
+@dataclass
+class Check:
+    name: str
+    ok: bool
+    detail: str = ""
+    fatal: bool = True
+
+
+def _run(argv: list[str], cwd: Path | None = None, timeout: int = 120) -> tuple[int, str]:
+    try:
+        p = subprocess.run(argv, cwd=str(cwd) if cwd else None, capture_output=True,
+                           text=True, timeout=timeout, encoding="utf-8", errors="replace")
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+    except FileNotFoundError as exc:
+        return 127, f"not found: {exc}"
+    except subprocess.TimeoutExpired:
+        return 124, "timed out"
+
+
+def selftest(code_root: Path, python: Path) -> list[Check]:
+    """Prove that an extracted release + provisioned venv can actually be driven."""
+    checks: list[Check] = []
+    scripts_dir = python.parent
+
+    # 1. the release tree looks like the monorepo we expect
+    for pkg in INSTALL_ORDER:
+        checks.append(Check(f"release tree has {pkg}/pyproject.toml",
+                            (code_root / pkg / "pyproject.toml").is_file()))
+    checks.append(Check("release tree has config/settings.yaml",
+                        (code_root / "config" / "settings.yaml").is_file()))
+    checks.append(Check("release tree has scenarios.xlsx",
+                        (code_root / "scenarios.xlsx").is_file()))
+
+    # 2. editable install anchored the package at the release root, not at site-packages
+    rc, out = _run([str(python), "-c",
+                    "import pricemodeling.config as c; print(c.PROJECT_ROOT)"])
+    anchored = rc == 0 and out.strip() and Path(out.strip()) == code_root.resolve()
+    checks.append(Check(
+        "pricemodeling.PROJECT_ROOT == code root",
+        bool(anchored),
+        f"got {out.strip() or rc!r}, expected {code_root.resolve()}"
+        + ("" if rc else "  (a non-editable install lands in site-packages and "
+                         "load_settings() then raises FileNotFoundError)"),
+    ))
+
+    # 3. settings actually load through that anchoring
+    rc, out = _run([str(python), "-c",
+                    "from pricemodeling.config import load_settings as l; print(l().db_path)"],
+                   cwd=code_root)
+    checks.append(Check("load_settings() resolves the database path", rc == 0, out.strip()[:200]))
+
+    # 4. the five console scripts resolve
+    for name in CONSOLE_SCRIPTS:
+        exe = scripts_dir / f"{name}.exe"
+        found = exe.is_file() or (scripts_dir / name).is_file()
+        checks.append(Check(f"console script '{name}' installed", found, str(exe)))
+
+    # 5. every entry point answers --help
+    rc, out = _run([str(python), "-m", "pricemodeling", "--help"], cwd=code_root)
+    checks.append(Check("python -m pricemodeling --help", rc == 0, out.strip().splitlines()[:1]
+                        and out.strip().splitlines()[0][:120] or ""))
+    for name, sub in (("weathergen", "weathergen"), ("demand-model", "demand_model"),
+                      ("res-model", "res_model"), ("avail-model", "availability_model"),
+                      ("dispatch-model", "dispatch_model")):
+        rc, out = _run([str(scripts_dir / name), "--help"], cwd=code_root / sub)
+        checks.append(Check(f"{name} --help", rc == 0, out.strip()[:120]))
+
+    # 6. the undeclared lazy imports are present
+    for mod, dist in UNDECLARED_IMPORTS.items():
+        rc, out = _run([str(python), "-c", f"import {mod}"])
+        checks.append(Check(f"lazy import '{mod}' available (pip: {dist})", rc == 0,
+                            "declared in no upstream pyproject - the lock must supply it"))
+
+    # 7. the optional extras that the fit commands need
+    for mod in ("statsmodels", "sklearn", "pyextremes", "xclim", "pygam", "matplotlib"):
+        rc, _ = _run([str(python), "-c", f"import {mod}"])
+        checks.append(Check(f"extra '{mod}' available", rc == 0,
+                            "declared only as an optional extra - compile the lock WITH extras",
+                            fatal=False))
+
+    # 8. tracked artifacts that a naive junction would hide
+    for rel in SEEDED_FROM_RELEASE:
+        checks.append(Check(f"tracked artifact present: {rel}", (code_root / rel).is_file(),
+                            "ships with the release and is READ at runtime - seed it into the "
+                            "relocated store and hash-check it"))
+
+    # 9. progress lines will be parseable (the module exists and is not silenced)
+    rc, out = _run([str(python), "-c",
+                    "from powersim_core.progress import Progress; print('ok')"])
+    checks.append(Check("powersim_core.progress importable (GUI progress source)", rc == 0,
+                        out.strip()[:120]))
+
+    return checks
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--list", action="store_true", help="print the job registry")
+    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--selftest", action="store_true", help="probe a real release + venv")
+    ap.add_argument("--code-root", type=Path, help="extracted release tree")
+    ap.add_argument("--python", type=Path, help="the provisioned venv's python.exe")
+    args = ap.parse_args(argv)
+
+    if args.list or not args.selftest:
+        if args.json:
+            print(json.dumps([{
+                "id": j.id, "title": j.title, "kind": j.kind.value, "stage": j.stage.value,
+                "argv": list(j.argv), "cwd": j.cwd, "credentials": list(j.needs_credentials),
+                "progress_label": j.progress_label, "resumable": j.resumable,
+                "failure_markers": list(j.failure_markers),
+                "warning_markers": list(j.warning_markers),
+                "upstream_ref": j.upstream_ref, "notes": j.notes,
+            } for j in JOBS], indent=2))
+        else:
+            for stage in Stage:
+                rows = [j for j in JOBS if j.stage is stage]
+                if not rows:
+                    continue
+                print(f"\n=== {stage.value.upper()} ===")
+                for j in rows:
+                    cred = f"  [{','.join(j.needs_credentials)}]" if j.needs_credentials else ""
+                    print(f"  {j.id:24s} {j.kind.value:8s} cwd={j.cwd:16s} {j.title}{cred}")
+            print(f"\n{len(JOBS)} jobs - "
+                  f"{sum(1 for j in JOBS if j.kind is Kind.WRAPPER)} need a drivers/ wrapper "
+                  f"(no upstream CLI exists)")
+        return 0
+
+    if not args.code_root or not args.python:
+        ap.error("--selftest needs --code-root and --python")
+
+    checks = selftest(args.code_root, args.python)
+    width = max(len(c.name) for c in checks)
+    failed = 0
+    for c in checks:
+        mark = "OK  " if c.ok else ("FAIL" if c.fatal else "WARN")
+        if not c.ok and c.fatal:
+            failed += 1
+        print(f"[{mark}] {c.name:{width}s}  {c.detail if not c.ok else ''}".rstrip())
+    print(f"\n{len(checks) - failed}/{len(checks)} checks passed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+registry.json
+
+# never commit a code release archive or a data snapshot into this repo
+releases/
+snapshots/
+*.zip
+*.zst
