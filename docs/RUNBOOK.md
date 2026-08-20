@@ -29,18 +29,22 @@ argument — it is the sanctioned data packager, and even it only reads.
 
 ## Once, to set up the machine
 
-**Runs in: anywhere.**
+**Runs in: anywhere.** One command — creating the environment and filling it must not be two
+steps, or the second runs against a directory that does not exist yet.
 
 ```bash
-python -m venv %LOCALAPPDATA%\dandelion-tools
+python -m venv "%LOCALAPPDATA%\dandelion-tools" && "%LOCALAPPDATA%\dandelion-tools\Scripts\python" -m pip install uv pyyaml zstandard pyinstaller
 ```
+
+Check it took:
 
 ```bash
-%LOCALAPPDATA%\dandelion-tools\Scripts\python -m pip install uv pyyaml zstandard pyinstaller
+"%LOCALAPPDATA%\dandelion-tools\Scripts\python" -m uv --version
 ```
 
-Every `release_tools` command below assumes this interpreter. Plain `python` will fail with
-`No module named uv` — the system Python has none of these.
+Every `release_tools` command below assumes that interpreter. Plain `python` fails with
+`No module named uv` — the system Python has none of these. If cmd reports *"Le chemin d'accès
+spécifié est introuvable"*, the venv is missing: re-run the command above.
 
 `uv` provisions the scratch environments, `zstandard` packs snapshots, `pyinstaller` builds
 the exe. All three are build-time only — none reaches a user machine. Run every command below
