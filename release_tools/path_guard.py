@@ -5,10 +5,9 @@ and easy to violate by accident - a debug constant, a default argument, a test f
 This guard greps the tree for absolute paths into a user profile, for references to the
 upstream checkout by name, and for the owner's identity.
 
-`release_tools/` is exempt from the upstream-checkout rule for exactly one reason: the
-`release-data` packager is an owner-side tool whose whole job is to read the git-ignored
-data artifacts that exist only in the owner's working copy. It is still NOT allowed to
-carry a hardcoded absolute path - it must take the source root as an argument.
+There are no exemptions. The data packager used to need one - it was the single tool allowed
+to read the owner's working copy - but the product no longer ships built databases, so no
+tool has any reason to reach outside this repository. The rule is now absolute.
 
     python release_tools/path_guard.py [--root .]
 """
@@ -56,7 +55,6 @@ RULES = (
         "upstream-checkout",
         rf"(?:\.\.[\\/]+|{_DRIVE}[\\/][^'\"\s]*[\\/])PriceModeling(?=[\\/'\"\s]|$)",
         "a path that walks to the owner's upstream checkout - code comes from release archives only",
-        exempt_dirs=("release_tools",),
         ignore_case=False,
     ),
     Rule(

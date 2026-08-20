@@ -1,6 +1,6 @@
 # Release runbook
 
-Everything the owner does to publish a release. Three independent cycles — code, data, app —
+Everything the owner does to publish a release. Two independent cycles — code and app —
 that can be run separately and in any order.
 
 Nothing here touches the research repository beyond reading it. No command in this document
@@ -16,14 +16,14 @@ the directory it runs in.
 | | |
 |---|---|
 | **`Dandelion-app\`** (this repo) | Every `release_tools\...` command. This is where the tooling lives. |
-| **`PriceModeling\`** (the research checkout) | Only `git tag` / `git push`. Nothing else, ever. |
+| **`PriceModeling\`** (the research checkout) | Only `git tag` / `git push`. Nothing else, ever — no tool here reads it. |
 
 `release_code.py` does **not** read the checkout next door. It clones the tag from GitHub into
 a scratch directory, which is exactly what keeps a release independent of whatever is sitting
 in your working copy. So it runs from the app repo and needs no path to the research one.
 
-The one exception is `release_data.py`, which takes the checkout as an explicit `--source`
-argument — it is the sanctioned data packager, and even it only reads.
+There is no exception any more: since the product does not ship built databases, nothing in
+this repository reads the research checkout at all.
 
 ---
 
@@ -55,7 +55,7 @@ Use the real installation instead, by full path. One command — creating the en
 filling it must not be two steps, or the second runs against a directory that does not exist:
 
 ```bash
-"%LOCALAPPDATA%\Programs\Python\Python312\python.exe" -m venv "%USERPROFILE%\dandelion-tools" && "%USERPROFILE%\dandelion-tools\Scripts\python" -m pip install uv pyyaml zstandard pyinstaller
+"%LOCALAPPDATA%\Programs\Python\Python312\python.exe" -m venv "%USERPROFILE%\dandelion-tools" && "%USERPROFILE%\dandelion-tools\Scripts\python" -m pip install uv pyyaml pyinstaller
 ```
 
 The venv goes under `%USERPROFILE%`, not `%LOCALAPPDATA%`, so it is outside both the
@@ -74,8 +74,8 @@ Every `release_tools` command below assumes that interpreter. Plain `python` fai
 > through `uv` rather than using whatever Python a user happens to have. A Store Python would
 > redirect the whole install out from under the wizard.
 
-`uv` provisions the scratch environments, `zstandard` packs snapshots, `pyinstaller` builds
-the exe. All three are build-time only — none reaches a user machine. Run every command below
+`uv` provisions the scratch environments and `pyinstaller` builds the exe. Both are
+build-time only — none reaches a user machine. Run every command below
 with `%USERPROFILE%\dandelion-tools\Scripts\python`; the exact versions used land in each
 manifest.
 
@@ -142,62 +142,21 @@ public releases-only repository, or hosting alongside the data snapshot.
 
 ---
 
-## 2. Data snapshot
+## 2. Data — there is no snapshot
 
-### First, the licensing worksheet (D1b)
+**Decision, 2026-08-20: the product never ships built databases.** Every user brings their own
+RTE / ENTSO-E / CDS credentials and rebuilds locally.
 
-`release_tools/data_stores.yaml` lists every store, the sources inside it, and the licence to
-check. Redistributing a database built from someone else's API is a per-source question, so
-the packager will not touch a store until you have answered it.
+That removes a whole release cycle, and with it the licensing question (D1b) and the hosting
+question for ~14 GB of data (D1a) — you cannot have a redistribution problem with data you do
+not redistribute. It also removed `release_data.py`, which was the single tool permitted to
+read your working copy. **No tool in this repository now reaches outside it**, and the path
+guard enforces that with no exemptions.
 
-Work through each store, set `ship: yes` or `ship: no`, then set `signed_off: true` with your
-name and the date. A `no` is not a failure — that store becomes rebuild-only and the wizard
-tells the user so.
-
-The most restrictive source in a store governs the whole store: `pricemodeling.db` is one
-SQLite file containing every ingested source and cannot be separated.
-
-### Measure before deciding
-
-**Runs in: `Dandelion-app\`**, pointing at the research checkout.
-
-```bash
-"%USERPROFILE%\dandelion-tools\Scripts\python" release_tools\release_data.py --source <your-Dandelion-checkout> --dry-run
-```
-
-Writes nothing. Reports every store's size, an estimated compressed size, and — importantly —
-what fraction of each store was actually sampled to produce that estimate. Read a ratio with
-its coverage: 0.1 % coverage on a 16 GB database is a decent guess, not a measurement.
-
-Measured on the owner's machine, 2026-08-20: **37.4 GB raw → roughly 14 GB packed** across all
-stores. That is the number that decides hosting (D1a).
-
-### Build it
-
-**Runs in: `Dandelion-app\`**
-
-```bash
-"%USERPROFILE%\dandelion-tools\Scripts\python" release_tools\release_data.py --source <your-Dandelion-checkout>
-```
-
-Packs each `ship: yes` store into zstd-compressed tar chunks of at most 1.4 GB — under
-GitHub's 2 GB asset cap — with a sha256 per chunk in `data_manifest.json`.
-
-Two guards run on every file. Anything `git ls-files` knows about is skipped, because a
-tracked file is code and comes from the code release; anything that *looks* like source is
-skipped as an independent backstop. `dispatch_model/reports/markup_model.json` is the case
-that matters — it lives among data outputs but ships with the code.
-
-### Verify what you are about to publish
-
-**Runs in: `Dandelion-app\`**
-
-```bash
-"%USERPROFILE%\dandelion-tools\Scripts\python" release_tools\release_data.py --verify dist\snapshot-2026-08-20
-```
-
-Re-hashes every chunk against the manifest. Run it after uploading too, against a
-re-downloaded copy — that is the same check the installer performs.
+What it costs is onboarding time, which moves from "download and go" to "get accounts, then
+rebuild". Phase 2's wizard is built around that: credentials become mandatory rather than
+skippable, and the ENTSO-E token in particular is granted by email and can take days, so the
+wizard must let users start, stop, and resume across that wait.
 
 ---
 
@@ -233,7 +192,7 @@ The binary is **unsigned** until D2, so SmartScreen will warn every user. `lates
 
 ## After any release
 
-- `code_manifest.json` and `data_manifest.json` are the record of what you shipped. Keep them.
+- `code_manifest.json` is the record of what you shipped. Keep it.
 - A release built from a local path is marked `"rehearsal": true` and must not be published.
 - Run `"%USERPROFILE%\dandelion-tools\Scripts\python" release_tools\path_guard.py --root .` if you have edited the tooling — it fails
   the build on any path that reaches into a particular machine.

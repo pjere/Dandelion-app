@@ -36,13 +36,12 @@ scrubbing alongside secret scrubbing.
 | tool | what it does |
 |---|---|
 | `release_tools/release_code.py` | tag → archive + lock + manifest, and refuses to publish unless a scratch install built the installer's way actually works |
-| `release_tools/release_data.py` | the sanctioned read-only packager of the git-ignored data stores, gated on the licensing worksheet |
-| `release_tools/data_stores.yaml` | the D1b worksheet: 10 stores, their sources, the licence to check, `ship:` per store |
 | `release_tools/release_app.py` | builds the exe, runs it, measures it, stamps `latest.json` |
 | `docs/RUNBOOK.md` | the owner-facing procedure, including what each failing gate means |
 | `src/dandelion/__main__.py` | minimal binary shell — `freeze_support()` first, WebView2 probe, `--self-check` |
 
-123 tests pass (33 new), ruff clean, path guard clean.
+114 tests pass, ruff clean, path guard clean. (33 were added in this phase; 9 went with
+`release_data.py`.)
 
 ---
 
@@ -61,36 +60,23 @@ constraints.lock            118 packages   sha256 b91227fd70b27a73…
 All seven packages install editable in ADR-8 order; five console scripts resolve;
 `PROJECT_ROOT` anchors to the release tree; the three undeclared imports are importable.
 
-### Data snapshot — the D1a number
+### Data snapshot — measured, then made moot
 
-```
-store                  ship     files           raw       ~packed  ratio  sampled
-pricemodeling_db    pending         1       16.5 GB        2.2 GB   0.13    0.1%
-raw_extracts        pending     1,644        4.9 GB      178.6 MB   0.04    2.0%
-era5                pending       194        4.0 GB        3.7 GB   0.92    4.7%
-cmip6               pending        24       37.1 MB       16.3 MB   0.44  100.0%
-lake                pending        31       67.4 MB       60.5 MB   0.90   87.5%
-weathergen_output   pending         3        1.3 GB      938.1 MB   0.72    1.8%
-model_fits          pending        17        3.2 GB        2.4 GB   0.74    0.8%
-dispatch_reports    pending        91       60.2 MB       41.3 MB   0.69   47.2%
-mastr_bulk          pending         3        7.4 GB        4.8 GB   0.64    0.2%
+The dry run measured **37.4 GB raw → ~14.2 GB packed** across ten stores, with the database
+compressing 8× (16.5 GB → 2.2 GB) and ERA5 not compressing at all (0.92).
 
-TOTAL                              37.4 GB  ~14.2 GB compressed
-```
+**Owner decision, 2026-08-20: the product ships no built databases.** Users bring their own
+credentials and rebuild locally, so D1b (licensing) and D1a (hosting) both dissolve — there is
+no redistribution to license or host. `release_data.py` and its worksheet were removed
+accordingly (recoverable from git history at `d5acb9d`).
 
-**Roughly 14 GB packed** for everything — the input to D1a. Two things stand out:
+The measurement is kept here because it is the cost of the alternative, and because two of its
+numbers still matter to Phase 2: ERA5 is 4 GB that every user must now pull from CDS on their
+first fit, and MaStR is 7.4 GB every user downloads themselves.
 
-- **The database compresses 8×** (16.5 GB → 2.2 GB). The single most valuable store is also
-  the cheapest to ship.
-- **ERA5 does not compress at all** (0.92). 4 GB of NetCDF is 3.7 GB packed either way. If
-  hosting is tight, this is the store to drop — at the cost of a multi-hour CDS pull on the
-  user's first fit.
-
-The `sampled` column is deliberate: a ratio from 0.1 % of a store is a decent guess, not a
-measurement, and the tool says so rather than presenting all nine numbers as equally solid.
-
-`dispatch_reports` shows `excluded: 1 tracked` — that is `markup_model.json` being correctly
-kept out of the data snapshot because it ships with the code.
+The secondary effect is worth more than the tool: `release_data.py` was the **single sanctioned
+exception** to "never read the owner's working copy". With it gone, no tool in the repository
+reaches outside it, and `path_guard.py` now enforces that with no exemptions at all.
 
 ### App binary
 
@@ -194,7 +180,7 @@ it is now demonstrated.
 | criterion | status |
 |---|---|
 | `release-code` produces a qualified, reproducible release | ✅ 29 checks, stable hashes |
-| `release-data --dry-run` reports the compressed snapshot size | ✅ ~14.2 GB — feeds D1a |
+| `release-data --dry-run` reports the compressed snapshot size | ✅ ~14.2 GB — then superseded: no snapshot ships |
 | `release-app` builds, measures and stamps | ✅ both packagings measured |
 | Runbook exists and covers every failure mode | ✅ `docs/RUNBOOK.md` |
 | **Owner performs one full cycle unaided** | ✅ `29/29`, `rehearsal: false`, no notes |
@@ -204,14 +190,10 @@ it is now demonstrated.
 ## What I need from you
 
 1. ~~Push the tag and run the cycle.~~ **Done.**
-2. **D1b, the licensing worksheet.** `release_tools/data_stores.yaml` is filled in with each
-   store's sources and the licence to check; the `ship:` decisions and the sign-off are yours.
-   Until then the packager only does `--dry-run`.
-3. **D1a, hosting.** ~14 GB total, or ~2.3 GB for the database plus fitted models alone if you
-   want a minimal fast-start snapshot. Worth deciding what the snapshot *is* before deciding
-   where it lives.
-4. **The registry sequence** (still open from Phase 0) — nothing in the tree composes
-   `download() → build() → registry.write()`.
+2. ~~D1b licensing / D1a hosting.~~ **Resolved: no data ships.**
+3. **The registry sequence** (still open from Phase 0) — nothing in the tree composes
+   `download() → build() → registry.write()`. This was a nice-to-have when a snapshot could
+   carry the built lake; with rebuild-only it is on **every user's** critical path.
 
 D3 (how the installer fetches releases from a private repo) and D2 (code signing) are not
 blocking yet but both land in Phase 2.

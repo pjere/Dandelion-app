@@ -11,11 +11,10 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from release_tools import release_code, release_data  # noqa: E402
+from release_tools import release_code  # noqa: E402
 from release_tools.import_scan import find_undeclared, local_module_names  # noqa: E402
 
 # ------------------------------------------------------------------ source builds
@@ -188,82 +187,6 @@ def test_test_files_are_not_scanned(tmp_path):
     (root / "tests").mkdir()
     (root / "tests" / "test_x.py").write_text("import some_test_only_package\n", encoding="utf-8")
     assert "some_test_only_package" not in find_undeclared(root)
-
-
-# ------------------------------------------------------------------ the data packager
-
-def test_worksheet_parses_and_starts_unsigned():
-    sheet = release_data.load_worksheet()
-    assert sheet["signed_off"] is False
-    assert sheet["stores"] and all("ship" in s for s in sheet["stores"])
-    assert all(s["ship"] == "pending" for s in sheet["stores"])
-
-
-def test_every_store_names_its_sources_and_a_licence_to_check():
-    for store in release_data.load_worksheet()["stores"]:
-        assert store.get("sources"), store["key"]
-        for src in store["sources"]:
-            assert src.get("name") and src.get("licence"), store["key"]
-
-
-def test_tracked_files_are_excluded_from_a_store(tmp_path):
-    """markup_model.json ships with the code release; it must never enter a data snapshot."""
-    source = tmp_path
-    (source / "dispatch_model" / "reports").mkdir(parents=True)
-    (source / "dispatch_model" / "reports" / "markup_model.json").write_text("{}", encoding="utf-8")
-    (source / "dispatch_model" / "reports" / "projection.parquet").write_bytes(b"\x00" * 100)
-    store = {"key": "dispatch_reports", "path": "dispatch_model/reports", "ship": "yes"}
-    tracked = {"dispatch_model/reports/markup_model.json"}
-
-    plan = release_data.plan_store(source, store, tracked, [])
-    assert plan.files == 1 and plan.excluded_tracked == 1
-    assert plan.bytes == 100
-
-
-def test_source_files_are_excluded_even_when_untracked(tmp_path):
-    source = tmp_path
-    (source / "data").mkdir()
-    (source / "data" / "helper.py").write_text("x = 1\n", encoding="utf-8")
-    (source / "data" / "notes.md").write_text("hi\n", encoding="utf-8")
-    (source / "data" / "series.parquet").write_bytes(b"\x00" * 50)
-    plan = release_data.plan_store(source, {"key": "d", "path": "data", "ship": "yes"}, set(), [])
-    assert plan.files == 1 and plan.excluded_source == 2
-
-
-def test_excluded_globs_are_honoured(tmp_path):
-    source = tmp_path
-    (source / "dispatch_model" / "scratchpad").mkdir(parents=True)
-    (source / "dispatch_model" / "scratchpad" / "cube.nc").write_bytes(b"\x00" * 10)
-    store = {"key": "s", "path": "dispatch_model", "ship": "yes"}
-    plan = release_data.plan_store(source, store, set(), ["dispatch_model/scratchpad"])
-    assert plan.files == 0
-
-
-def test_an_absent_store_is_reported_not_silently_zero(tmp_path):
-    plan = release_data.plan_store(tmp_path, {"key": "x", "path": "nope", "ship": "yes"},
-                                   set(), [])
-    assert plan.files == 0 and any("absent" in n for n in plan.notes)
-
-
-def test_packaging_refuses_while_the_worksheet_is_unsigned(tmp_path, capsys):
-    sheet = release_data.load_worksheet()
-    sheet["signed_off"] = False
-    path = tmp_path / "sheet.yaml"
-    path.write_text(yaml.safe_dump(sheet), encoding="utf-8")
-    rc = release_data.main(["--source", str(tmp_path), "--worksheet", str(path)])
-    assert rc == 1
-    assert "REFUSING to package" in capsys.readouterr().out
-
-
-def test_dry_run_writes_nothing(tmp_path, capsys):
-    rc = release_data.main(["--source", str(tmp_path), "--dry-run"])
-    assert rc == 0
-    assert "dry run - nothing written" in capsys.readouterr().out
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_chunk_limit_stays_under_the_github_asset_cap():
-    assert release_data.CHUNK_BYTES < 2_000_000_000
 
 
 # ------------------------------------------------------------------ the wheel audit

@@ -15,8 +15,9 @@ upstream — not a flag, not a config key, not a print statement.
   we generate). The owner's working copy is never a source of anything the product executes.
 - All upstream knowledge lives in `drivers/`. When a new tag is cut, `drivers/` and the pin are
   the only things that should need to change.
-- `release_tools/release-data` is the single sanctioned exception: an owner-side, read-only
-  packager of the git-ignored **data** artifacts. It never touches tracked files.
+- The product ships **no built databases**. Every user brings their own RTE / ENTSO-E / CDS
+  credentials and rebuilds locally, so nothing in this repository reads the owner's working
+  copy — there are no exceptions to enforce.
 
 `release_tools/path_guard.py` enforces this in CI.
 
@@ -28,7 +29,7 @@ drivers/           the ONLY place that knows about upstream
   inventory.py       36 jobs: argv, cwd, credentials, progress label, failure markers
   anchoring.py       the 12 relocatable stores and which mechanism relocates each
   wrappers/          thin wrappers where upstream exposes functions but no CLI
-release_tools/     release-code / release-data / release-app, import scan, path guard
+release_tools/     release-code / release-app, import scan, path guard
 installer/         PyInstaller packaging
 tests/
 docs/phase-reports/
