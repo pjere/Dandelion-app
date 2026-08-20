@@ -8,7 +8,28 @@ writes to `pjere/Dandelion`.
 
 ---
 
+## Two directories — which command runs where
+
+This is the single easiest thing to get wrong, so every command block below is labelled with
+the directory it runs in.
+
+| | |
+|---|---|
+| **`Dandelion-app\`** (this repo) | Every `release_tools\...` command. This is where the tooling lives. |
+| **`PriceModeling\`** (the research checkout) | Only `git tag` / `git push`. Nothing else, ever. |
+
+`release_code.py` does **not** read the checkout next door. It clones the tag from GitHub into
+a scratch directory, which is exactly what keeps a release independent of whatever is sitting
+in your working copy. So it runs from the app repo and needs no path to the research one.
+
+The one exception is `release_data.py`, which takes the checkout as an explicit `--source`
+argument — it is the sanctioned data packager, and even it only reads.
+
+---
+
 ## Once, to set up the machine
+
+**Runs in: anywhere.**
 
 ```bash
 python -m venv %LOCALAPPDATA%\dandelion-tools
@@ -17,6 +38,9 @@ python -m venv %LOCALAPPDATA%\dandelion-tools
 ```bash
 %LOCALAPPDATA%\dandelion-tools\Scripts\python -m pip install uv pyyaml zstandard pyinstaller
 ```
+
+Every `release_tools` command below assumes this interpreter. Plain `python` will fail with
+`No module named uv` — the system Python has none of these.
 
 `uv` provisions the scratch environments, `zstandard` packs snapshots, `pyinstaller` builds
 the exe. All three are build-time only — none reaches a user machine. Run every command below
@@ -29,6 +53,8 @@ manifest.
 
 ### Cut the tag
 
+**Runs in: `PriceModeling\` (the research checkout).**
+
 ```bash
 git tag -a v0.1.0 -m "release v0.1.0" && git push origin v0.1.0
 ```
@@ -37,6 +63,9 @@ Any commit you are happy for a non-developer to run. **A tag is required** — t
 model is "a tag → an archive → a lock", and `main` moves.
 
 ### Build and qualify it
+
+**Runs in: `Dandelion-app\`** — not the research checkout. The tool fetches the tag
+from GitHub itself.
 
 ```bash
 python release_tools/release_code.py --tag v0.1.0
@@ -98,6 +127,8 @@ SQLite file containing every ingested source and cannot be separated.
 
 ### Measure before deciding
 
+**Runs in: `Dandelion-app\`**, pointing at the research checkout.
+
 ```bash
 python release_tools/release_data.py --source <your-Dandelion-checkout> --dry-run
 ```
@@ -110,6 +141,8 @@ Measured on the owner's machine, 2026-08-20: **37.4 GB raw → roughly 14 GB pac
 stores. That is the number that decides hosting (D1a).
 
 ### Build it
+
+**Runs in: `Dandelion-app\`**
 
 ```bash
 python release_tools/release_data.py --source <your-Dandelion-checkout>
@@ -125,6 +158,8 @@ that matters — it lives among data outputs but ships with the code.
 
 ### Verify what you are about to publish
 
+**Runs in: `Dandelion-app\`**
+
 ```bash
 python release_tools/release_data.py --verify dist\snapshot-2026-08-20
 ```
@@ -135,6 +170,8 @@ re-downloaded copy — that is the same check the installer performs.
 ---
 
 ## 3. App release
+
+**Runs in: `Dandelion-app\`**
 
 ```bash
 python release_tools/release_app.py --version 0.1.0 --url https://.../Dandelion.exe
