@@ -33,20 +33,49 @@ silently, because nothing upstream fails when a new lazy import is added.
 
 ### 2. An orchestration entry point for the plant registries
 
-`pricemodeling/registries/{mastr,odre,opsd,repd}.py` expose `download()` / `build()`, and
-`powersim_core.registry.write(df, source)` writes a source's slice to the lake — but
-**nothing in the tree composes them**. `registry.write` is called only from tests. So the
-sequence that actually produced the registry layer in the shipped lake exists only in the
-owner's shell history.
+`pricemodeling/registries/{mastr,odre,opsd,repd,cohort}.py` expose `download()` / `build()`,
+and `powersim_core.registry.write(df, source)` writes a source's slice to the lake's
+`reference/plant_registry` — but **nothing in the tree composes them**. `registry.write` is
+called only from tests, and `docs/INSTALL.md` lists the invocation as, literally,
+"`pricemodeling.registries.*`". The recipe exists only in the owner's shell history.
 
-We have to author that composition in `drivers/wrappers/registries.py` and guess at it.
-If our guess differs from what the owner ran, the product silently builds a different
-registry than the research results were computed on.
+This mattered moderately when a published snapshot could carry the built lake. Since the
+product ships **no data**, every user now runs this step, so a wrong guess means every user's
+plant fleet differs from the reference — silently, because a smaller registry still dispatches.
 
-**Ask (small):** confirm the exact sequence, so our wrapper matches. **Ask (better):** a
-`python -m pricemodeling ingest-registry <source>` command, which would delete the wrapper.
+**Reconstructed from the owner's lake and MaStR landing DB** (2026-08-20), pending confirmation:
 
----
+```python
+from powersim_core import registry
+from pricemodeling.registries import cohort, mastr, odre, opsd, repd
+
+mastr.fetch_bulk("20260715")                      # Gesamtdatenexport_20260715.zip, ~3 GB
+mastr.load_bulk_to_sqlite("20260715", data=[...]) # landing DB holds ALL technologies
+registry.write(mastr.build(as_of="2026-07-16", tables=[
+    "combustion_extended", "nuclear_extended", "biomass_extended",
+    "hydro_extended", "wind_extended",            # NOT solar_extended, NOT storage_extended
+]), mastr.SOURCE)
+
+registry.write(odre.build(odre.download()), odre.SOURCE)     # FR
+registry.write(opsd.build(opsd.download()), opsd.SOURCE)     # CH  -> source key "opsd_ch"
+registry.write(repd.build(repd.download()), repd.SOURCE)     # GB
+registry.write(cohort.build("scenarios.xlsx"), cohort.SOURCE)  # BE / IT / ES cohorts
+```
+
+Evidence: the lake has exactly five partitions (`cohort`, `mastr`, `odre`, `opsd_ch`, `repd`)
+with 169,979 / 137,190 / 12,718 / 2,751 / 12 rows. Only the MaStR slice carries an `as_of`
+(`2026-07-16`), matching the landing DB's build date; the others were built with the default
+`as_of=None`. The MaStR slice contains gas, wind_onshore, biomass, oil, hydro_ror, waste,
+coal, lignite and nuclear but **no solar and no hydro_psp**, while the landing DB does contain
+`solar_extended` and `storage_extended` — so the subset was chosen at `build(tables=...)`, not
+at load time. That is a deliberate, non-default choice no wrapper could have guessed.
+
+**Still unconfirmed:** the `data=[...]` list passed to `load_bulk_to_sqlite`, and whether
+excluding `storage_extended` (pumped hydro) is intentional or an oversight.
+
+**Ask (small):** confirm the two open points above. **Ask (better):** a
+`python -m pricemodeling ingest-registry <source>` command, which would delete the wrapper and
+make the choice reviewable in the repo rather than in a shell.
 
 ### 3. Commands that fail should exit non-zero
 
