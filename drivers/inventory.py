@@ -295,13 +295,15 @@ JOBS: tuple[Job, ...] = (
         needs_credentials=("CDSAPI_URL", "CDSAPI_KEY"),
         produces=("weathergen/models/cmip6_deltas_{ssp}_{target_year}_mpi_esm1_2_lr.npz",),
         notes=(
-            "Prerequisite of weathergen-simulate (NOT of fit) whenever the climate trend is on. "
-            "One npz per (ssp, target_year) pair, because both are simulate-time inputs. The "
-            "product runs this at install for the config default so the trend toggle works out "
-            "of the box, and again whenever the user picks a scenario it has no deltas for. "
-            "The --model CLI help says 'default ec_earth3' but the real default is "
-            "mpi_esm1_2_lr (cmip6_cds.py:24) - the filename embeds it, so the stale value looks "
-            "for the wrong file."
+            "MANDATORY at install: the product ships the climate trend ON (see "
+            "drivers.code_patches.trend_patch), so every projection needs these deltas and "
+            "CDS credentials stop being optional. Prerequisite of weathergen-simulate, NOT of "
+            "fit. One npz per (ssp, target_year) pair, because both are simulate-time inputs - "
+            "the install fetches the config default (ssp245 @ 2050) and the Studio fetches "
+            "again whenever the user picks a scenario it has no deltas for. The --model CLI "
+            "help says 'default ec_earth3' but the real default is mpi_esm1_2_lr "
+            "(cmip6_cds.py:24) - the filename embeds it, so the stale value looks for a file "
+            "nothing will ever write."
         ),
         upstream_ref="weathergen/weathergen/cli.py:109-119,164; cmip6_cds.py:116-139",
     ),
@@ -339,8 +341,11 @@ JOBS: tuple[Job, ...] = (
             "Trend(enabled=True, deltas={}) (trend.py:94) and Trend.apply then returns the cube "
             "UNCHANGED (trend.py:45), while simulation.nc's embedded provenance still says the "
             "trend was applied. A present-day climate labelled as the target year, exit code 0. "
-            "Hence the preflight. Upstream ships trend.enabled: false, so an untrended run is "
-            "only wrong when the user asked for a trend."
+            "Hence the preflight. Upstream ships trend.enabled: false, but THE PRODUCT SHIPS IT "
+            "ON (owner decision 2026-08-20, drivers.code_patches), so this preflight is on the "
+            "default path for every install rather than an edge case. Never pass --no-trend "
+            "here: the Monte-Carlo path cannot see CLI flags, so a flag would desync a single "
+            "simulation from the ensemble. The trend is switched through the config patch only."
         ),
         upstream_ref="weathergen/weathergen/cli.py:88-106,124; trend.py:45,86-98",
     ),
