@@ -29,26 +29,54 @@ argument — it is the sanctioned data packager, and even it only reads.
 
 ## Once, to set up the machine
 
-**Runs in: anywhere.** One command — creating the environment and filling it must not be two
-steps, or the second runs against a directory that does not exist yet.
+**Runs in: anywhere.**
 
-```bash
-python -m venv "%LOCALAPPDATA%\dandelion-tools" && "%LOCALAPPDATA%\dandelion-tools\Scripts\python" -m pip install uv pyyaml zstandard pyinstaller
+### Do not use the Microsoft Store Python
+
+If `python` on your PATH resolves under `WindowsApps\`, it is the Store build. It runs in an
+AppContainer with **filesystem virtualization**: writes to `%LOCALAPPDATA%` and `%APPDATA%` are
+silently redirected into its own private cache. Create a venv there and it lands in
+
+```
+%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.12_...\LocalCache\Local\...
 ```
 
-Check it took:
+while every later command looks for it at the path you asked for and fails with *"Le chemin
+d'accès spécifié est introuvable"*. `venv` does warn — `Actual environment location may have
+moved due to redirects, links or junctions` — and that warning is the whole story.
+
+Check which one you have:
 
 ```bash
-"%LOCALAPPDATA%\dandelion-tools\Scripts\python" -m uv --version
+where python
+```
+
+Use the real installation instead, by full path. One command — creating the environment and
+filling it must not be two steps, or the second runs against a directory that does not exist:
+
+```bash
+"%LOCALAPPDATA%\Programs\Python\Python312\python.exe" -m venv "%USERPROFILE%\dandelion-tools" && "%USERPROFILE%\dandelion-tools\Scripts\python" -m pip install uv pyyaml zstandard pyinstaller
+```
+
+The venv goes under `%USERPROFILE%`, not `%LOCALAPPDATA%`, so it is outside both the
+virtualized area and any OneDrive-synced folder.
+
+Check it took — this should print a version, not an error:
+
+```bash
+"%USERPROFILE%\dandelion-tools\Scripts\python" -m uv --version
 ```
 
 Every `release_tools` command below assumes that interpreter. Plain `python` fails with
-`No module named uv` — the system Python has none of these. If cmd reports *"Le chemin d'accès
-spécifié est introuvable"*, the venv is missing: re-run the command above.
+`No module named uv` — the system Python has none of these.
+
+> This is not just a papercut for the owner: it is why the product provisions its own CPython
+> through `uv` rather than using whatever Python a user happens to have. A Store Python would
+> redirect the whole install out from under the wizard.
 
 `uv` provisions the scratch environments, `zstandard` packs snapshots, `pyinstaller` builds
 the exe. All three are build-time only — none reaches a user machine. Run every command below
-with `%LOCALAPPDATA%\dandelion-tools\Scripts\python`; the exact versions used land in each
+with `%USERPROFILE%\dandelion-tools\Scripts\python`; the exact versions used land in each
 manifest.
 
 ---
@@ -72,7 +100,7 @@ model is "a tag → an archive → a lock", and `main` moves.
 from GitHub itself.
 
 ```bash
-python release_tools/release_code.py --tag v0.1.0
+"%USERPROFILE%\dandelion-tools\Scripts\python" release_tools\release_code.py --tag v0.1.0
 ```
 
 Takes roughly 6–8 minutes, most of it the upstream test suites. It clones the tag into a
@@ -134,7 +162,7 @@ SQLite file containing every ingested source and cannot be separated.
 **Runs in: `Dandelion-app\`**, pointing at the research checkout.
 
 ```bash
-python release_tools/release_data.py --source <your-Dandelion-checkout> --dry-run
+"%USERPROFILE%\dandelion-tools\Scripts\python" release_tools\release_data.py --source <your-Dandelion-checkout> --dry-run
 ```
 
 Writes nothing. Reports every store's size, an estimated compressed size, and — importantly —
@@ -149,7 +177,7 @@ stores. That is the number that decides hosting (D1a).
 **Runs in: `Dandelion-app\`**
 
 ```bash
-python release_tools/release_data.py --source <your-Dandelion-checkout>
+"%USERPROFILE%\dandelion-tools\Scripts\python" release_tools\release_data.py --source <your-Dandelion-checkout>
 ```
 
 Packs each `ship: yes` store into zstd-compressed tar chunks of at most 1.4 GB — under
@@ -165,7 +193,7 @@ that matters — it lives among data outputs but ships with the code.
 **Runs in: `Dandelion-app\`**
 
 ```bash
-python release_tools/release_data.py --verify dist\snapshot-2026-08-20
+"%USERPROFILE%\dandelion-tools\Scripts\python" release_tools\release_data.py --verify dist\snapshot-2026-08-20
 ```
 
 Re-hashes every chunk against the manifest. Run it after uploading too, against a
@@ -178,7 +206,7 @@ re-downloaded copy — that is the same check the installer performs.
 **Runs in: `Dandelion-app\`**
 
 ```bash
-python release_tools/release_app.py --version 0.1.0 --url https://.../Dandelion.exe
+"%USERPROFILE%\dandelion-tools\Scripts\python" release_tools\release_app.py --version 0.1.0 --url https://.../Dandelion.exe
 ```
 
 Builds the executable, then **runs it**: version, cold start, warm start, and the binary's own
@@ -207,5 +235,5 @@ The binary is **unsigned** until D2, so SmartScreen will warn every user. `lates
 
 - `code_manifest.json` and `data_manifest.json` are the record of what you shipped. Keep them.
 - A release built from a local path is marked `"rehearsal": true` and must not be published.
-- Run `python release_tools/path_guard.py --root .` if you have edited the tooling — it fails
+- Run `"%USERPROFILE%\dandelion-tools\Scripts\python" release_tools\path_guard.py --root .` if you have edited the tooling — it fails
   the build on any path that reaches into a particular machine.
