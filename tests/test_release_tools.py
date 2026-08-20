@@ -241,3 +241,103 @@ def test_audit_falls_back_to_raw_output_when_it_cannot_parse(monkeypatch, tmp_pa
     monkeypatch.setattr(release_code, "run", fake_run)
     ok, detail = release_code.audit_wheels(["uv"], tmp_path / "python.exe", tmp_path / "lock")
     assert not ok and "network unreachable" in detail
+
+
+# ------------------------------------------------------------------ the fits packager
+
+from release_tools import release_fits  # noqa: E402
+
+
+def _models(tmp_path: Path, package: str) -> Path:
+    d = tmp_path / package / "models"
+    d.mkdir(parents=True)
+    return d
+
+
+def test_array_placeholder_detection():
+    assert release_fits.ARRAY_TAG == "__ndarray__"
+
+
+def test_json_referencing_arrays_needs_a_sidecar(tmp_path):
+    p = tmp_path / "f.json"
+    p.write_text('{"a": {"__ndarray__": "a0"}}', encoding="utf-8")
+    assert release_fits.references_arrays(p)
+
+
+def test_json_without_arrays_needs_no_sidecar(tmp_path):
+    p = tmp_path / "f.json"
+    p.write_text('{"a": [1, 2, 3]}', encoding="utf-8")
+    assert not release_fits.references_arrays(p)
+
+
+def test_a_fit_missing_its_sidecar_is_reported_as_broken(tmp_path):
+    """The exact state the owner's weathergen fit was in: 563 array refs, no npz."""
+    d = _models(tmp_path, "availability_model")
+    (d / "calibrated_availability.json").write_text('{"x": {"__ndarray__": "a0"}}',
+                                                    encoding="utf-8")
+    sets = release_fits.collect(tmp_path, hash_files=False)
+    avail = next(fs for fs in sets if fs.package == "availability_model")
+    assert avail.artifacts == []
+    assert any("BROKEN" in p and "cannot be loaded" in p for p in avail.problems)
+
+
+def test_a_complete_fit_pairs_the_json_with_its_sidecar(tmp_path):
+    d = _models(tmp_path, "availability_model")
+    (d / "calibrated_availability.json").write_text('{"x": {"__ndarray__": "a0"}}',
+                                                    encoding="utf-8")
+    (d / "calibrated_availability.json.npz").write_bytes(b"\x00" * 32)
+    sets = release_fits.collect(tmp_path, hash_files=False)
+    avail = next(fs for fs in sets if fs.package == "availability_model")
+    assert [a.name for a in avail.artifacts] == [
+        "calibrated_availability.json", "calibrated_availability.json.npz"]
+    assert avail.problems == []
+
+
+def test_sidecarless_json_is_fine_when_it_holds_no_arrays(tmp_path):
+    d = _models(tmp_path, "availability_model")
+    (d / "calibrated_availability.json").write_text('{"x": 1}', encoding="utf-8")
+    sets = release_fits.collect(tmp_path, hash_files=False)
+    avail = next(fs for fs in sets if fs.package == "availability_model")
+    assert [a.name for a in avail.artifacts] == ["calibrated_availability.json"]
+    assert avail.problems == []
+
+
+def test_backups_and_stale_caches_are_never_shipped(tmp_path):
+    for path, why in [
+        (Path("x/models/fitted_pre_seasonal.pkl.bak"), ".bak"),
+        (Path("x/models/backup_fr42/fitted.json"), "backup dir"),
+        (Path("x/models/_gauss_cache.npz"), "unreferenced cache"),
+    ]:
+        assert release_fits.is_excluded(path) is not None, why
+
+
+def test_a_real_artifact_is_not_excluded():
+    assert release_fits.is_excluded(Path("weathergen/models/fitted.json")) is None
+
+
+def test_missing_declared_artifact_is_reported(tmp_path):
+    _models(tmp_path, "res_model")
+    sets = release_fits.collect(tmp_path, hash_files=False)
+    res = next(fs for fs in sets if fs.package == "res_model")
+    assert any("missing: res_model/models/calibrated_res.json" in p for p in res.problems)
+
+
+def test_cmip6_deltas_are_collected_by_pattern(tmp_path):
+    d = _models(tmp_path, "weathergen")
+    (d / "fitted.json").write_text('{"x": 1}', encoding="utf-8")
+    (d / "wind100.json").write_text('{"x": 1}', encoding="utf-8")
+    (d / "cmip6_deltas_ssp245_2050_mpi_esm1_2_lr.npz").write_bytes(b"\x00" * 8)
+    sets = release_fits.collect(tmp_path, hash_files=False)
+    wg = next(fs for fs in sets if fs.package == "weathergen")
+    assert "cmip6_deltas_ssp245_2050_mpi_esm1_2_lr.npz" in [a.name for a in wg.artifacts]
+
+
+def test_dispatch_markup_is_deliberately_not_packaged():
+    """It is tracked and ships with the code; two copies would have no tie-break rule."""
+    assert "dispatch_model" in release_fits.NOT_PACKAGED
+    assert "dispatch_model" not in release_fits.FIT_SETS
+
+
+def test_fits_require_a_code_tag(capsys):
+    with pytest.raises(SystemExit):
+        release_fits.main(["--source", "."])

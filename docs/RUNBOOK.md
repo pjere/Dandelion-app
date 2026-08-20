@@ -1,6 +1,6 @@
 # Release runbook
 
-Everything the owner does to publish a release. Two independent cycles — code and app —
+Everything the owner does to publish a release. Three independent cycles — code, fits and app —
 that can be run separately and in any order.
 
 Nothing here touches the research repository beyond reading it. No command in this document
@@ -55,7 +55,7 @@ Use the real installation instead, by full path. One command — creating the en
 filling it must not be two steps, or the second runs against a directory that does not exist:
 
 ```bash
-"%LOCALAPPDATA%\Programs\Python\Python312\python.exe" -m venv "%USERPROFILE%\dandelion-tools" && "%USERPROFILE%\dandelion-tools\Scripts\python" -m pip install uv pyyaml pyinstaller
+"%LOCALAPPDATA%\Programs\Python\Python312\python.exe" -m venv "%USERPROFILE%\dandelion-tools" && "%USERPROFILE%\dandelion-tools\Scripts\python" -m pip install uv pyyaml zstandard pyinstaller
 ```
 
 The venv goes under `%USERPROFILE%`, not `%LOCALAPPDATA%`, so it is outside both the
@@ -74,8 +74,8 @@ Every `release_tools` command below assumes that interpreter. Plain `python` fai
 > through `uv` rather than using whatever Python a user happens to have. A Store Python would
 > redirect the whole install out from under the wizard.
 
-`uv` provisions the scratch environments and `pyinstaller` builds the exe. Both are
-build-time only — none reaches a user machine. Run every command below
+`uv` provisions the scratch environments, `zstandard` packs the fits and `pyinstaller`
+builds the exe. All three are build-time only — none reaches a user machine. Run every command below
 with `%USERPROFILE%\dandelion-tools\Scripts\python`; the exact versions used land in each
 manifest.
 
@@ -142,21 +142,41 @@ public releases-only repository, or hosting alongside the data snapshot.
 
 ---
 
-## 2. Data — there is no snapshot
+## 2. Data — no snapshot, but the fits do ship
 
-**Decision, 2026-08-20: the product never ships built databases.** Every user brings their own
-RTE / ENTSO-E / CDS credentials and rebuilds locally.
+**Decision, 2026-08-20: the product ships no built databases.** Every user brings their own
+RTE / ENTSO-E / CDS credentials and rebuilds locally. That removes a whole release cycle and
+with it the licensing question (D1b) and the hosting of ~14 GB (D1a) — you cannot have a
+redistribution problem with data you do not redistribute.
 
-That removes a whole release cycle, and with it the licensing question (D1b) and the hosting
-question for ~14 GB of data (D1a) — you cannot have a redistribution problem with data you do
-not redistribute. It also removed `release_data.py`, which was the single tool permitted to
-read your working copy. **No tool in this repository now reaches outside it**, and the path
-guard enforces that with no exemptions.
+**The fitted models are different** and do ship: they are your own work, not a redistribution
+of anyone's data, and they are what makes a user's projections match the reference rather than
+merely resemble it. They are also small — **under 1 MB** for everything except the weathergen
+generator's array sidecar.
 
-What it costs is onboarding time, which moves from "download and go" to "get accounts, then
-rebuild". Phase 2's wizard is built around that: credentials become mandatory rather than
-skippable, and the ENTSO-E token in particular is granted by email and can take days, so the
-wizard must let users start, stop, and resume across that wait.
+**Runs in: `Dandelion-app\`**
+
+```bash
+"%USERPROFILE%\dandelion-tools\Scripts\python" release_toolselease_fits.py --source <your-Dandelion-checkout> --tag v0.1.0 --python <release-venv>\Scripts\python.exe --dry-run
+```
+
+Drop `--dry-run` to package. Two things it insists on:
+
+- **`--tag`.** A fit is not portable across code versions: the serialized dataclasses name
+  their own classes, so a structural change upstream makes an old fit unloadable. Fits are
+  published per code tag.
+- **`--python`** pointing at a release venv, so every fit is **loaded through upstream's own
+  deserializer before it is packaged**. A fit that does not load fails on the user's machine,
+  hours into their first run, not here.
+
+The tool declares what a complete fit set is per package rather than sweeping `*/models`,
+because `save_params` writes a `.npz` sidecar *only when the payload holds arrays* and deletes
+it when it does not. A JSON carrying `__ndarray__` references with no sidecar beside it is a
+broken fit, and the tool says so instead of shipping it. Backups (`*.bak`, `backup*/`) and the
+unreferenced `_gauss_cache.npz` are never packaged.
+
+`dispatch_model` is deliberately absent: its one fitted artifact, `markup_model.json`, is
+tracked and already ships inside the code release.
 
 ---
 

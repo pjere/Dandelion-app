@@ -16,8 +16,8 @@ upstream — not a flag, not a config key, not a print statement.
 - All upstream knowledge lives in `drivers/`. When a new tag is cut, `drivers/` and the pin are
   the only things that should need to change.
 - The product ships **no built databases**. Every user brings their own RTE / ENTSO-E / CDS
-  credentials and rebuilds locally, so nothing in this repository reads the owner's working
-  copy — there are no exceptions to enforce.
+  credentials and rebuilds locally. The owner's **fitted models** do ship — they are his own
+  work, under 1 MB, and they are what makes a user's numbers match the reference.
 
 `release_tools/path_guard.py` enforces this in CI.
 
@@ -29,7 +29,7 @@ drivers/           the ONLY place that knows about upstream
   inventory.py       36 jobs: argv, cwd, credentials, progress label, failure markers
   anchoring.py       the 12 relocatable stores and which mechanism relocates each
   wrappers/          thin wrappers where upstream exposes functions but no CLI
-release_tools/     release-code / release-app, import scan, path guard
+release_tools/     release-code / release-fits / release-app, import scan, path guard
 installer/         PyInstaller packaging
 tests/
 docs/phase-reports/
