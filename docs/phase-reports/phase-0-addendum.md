@@ -9,6 +9,7 @@
 | `reports/` seeding fix (contradiction 1) | **Approved.** `reports/` is never junctioned; the installer seeds the shared store from the release per tag and hash-verifies it. |
 | Registry sequence (wishlist §2) | **Approved** — owner will confirm the exact `download() → build() → registry.write()` composition; `drivers/wrappers/registries.py` will match it. |
 | **D5 — GUI language** | **English.** Wizard, Studio, docs. Upstream's French runtime output is shown verbatim in the log pane; error and warning **cards** are written in English by `drivers/inventory.py`, keyed off the markers declared per job. |
+| Climate trend | **ON by default**, SSP2-4.5, ramped 2020→2050. Set by a declared, hashed config patch (the Monte-Carlo path accepts no override). |
 | P1 — cut a tag | Still open. Blocks the Phase 1 gate. |
 
 ## The CMIP6 guard
@@ -116,13 +117,25 @@ config file is the only lever that reaches both.
 5. No new dependency: QDM is implemented in pure numpy (`trend.py` D6.1); `xclim` is only a
    documented future drop-in.
 
-**Still yours to decide, when convenient:** `ssp245` is upstream's default scenario. If you would
-rather ship SSP1-2.6 or SSP5-8.5 as the headline, it is a one-word change to the same patch — and
-the GUI will expose the scenario picker either way.
+### Scenario: SSP2-4.5, and it stays that way
+
+**Owner decision, 2026-08-20: keep `ssp245` as the shipped headline scenario.** The GUI still
+exposes the scenario picker, and each scenario/horizon pair fetches its own deltas on demand.
+
+That value needs no patch — it is already what upstream ships. But *inheriting* a default is not
+the same as *choosing* one, and this whole phase has been an exercise in finding places where the
+two look identical until they diverge. If a future release edited `trend.ssp`, the product's
+headline scenario would change with it, silently, and every projection would quietly answer a
+different question.
+
+So `code_patches.EXPECTED_VALUES` declares the three trend values the product deliberately
+inherits — `ssp: "ssp245"`, `target_year: 2050`, `baseline_year: 2020` — and `check_expectations()`
+verifies them at install. A mismatch is **reported for review, never overwritten**: upstream is
+allowed to change its mind, but not without us noticing. Checked green against `09a2459`.
 
 ## Verification
 
-86 tests pass, ruff clean, path guard clean, registry self-consistent.
+90 tests pass, ruff clean, path guard clean, registry self-consistent.
 
 New in `tests/test_code_patches.py`: one line changes and no other, the decoy stays put, the
 patch is idempotent, it refuses an unrecognised value, verification catches post-install

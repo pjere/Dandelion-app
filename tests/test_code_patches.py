@@ -221,3 +221,40 @@ def test_summary_label_states_the_scenario():
     on = PatchSummary(True, "ssp245", 2050).label()
     assert "SSP245" in on and "2020" in on and "2050" in on
     assert "OFF" in PatchSummary(False, "ssp245", 2050).label()
+
+
+# --------------------------------------------------------------- inherited-but-chosen values
+
+def test_expectations_pass_on_the_shipped_config(tree):
+    from drivers.code_patches import check_expectations
+    assert check_expectations(tree) == []
+
+
+def test_expectations_catch_an_upstream_scenario_change(tree):
+    """SSP2-4.5 is a choice we inherit, not one we set. If upstream moves it, say so."""
+    from drivers.code_patches import check_expectations
+    text = _cfg(tree).read_text(encoding="utf-8")
+    text, _ = set_scalar_in_block(text, "trend", "ssp", '"ssp585"')
+    _cfg(tree).write_text(text, encoding="utf-8")
+    problems = check_expectations(tree)
+    assert len(problems) == 1
+    assert "ssp585" in problems[0] and "ssp245" in problems[0]
+    assert "owner decision" in problems[0]
+
+
+def test_expectations_catch_a_horizon_change(tree):
+    from drivers.code_patches import check_expectations
+    text = _cfg(tree).read_text(encoding="utf-8")
+    text, _ = set_scalar_in_block(text, "trend", "target_year", "2040")
+    _cfg(tree).write_text(text, encoding="utf-8")
+    assert any("target_year" in p for p in check_expectations(tree))
+
+
+def test_expectations_are_reported_not_overwritten(tree):
+    """These are a review trigger, never a silent correction."""
+    from drivers.code_patches import check_expectations
+    text = _cfg(tree).read_text(encoding="utf-8")
+    text, _ = set_scalar_in_block(text, "trend", "ssp", '"ssp585"')
+    _cfg(tree).write_text(text, encoding="utf-8")
+    check_expectations(tree)
+    assert read_scalar_in_block(_cfg(tree).read_text(encoding="utf-8"), "trend", "ssp") == '"ssp585"'

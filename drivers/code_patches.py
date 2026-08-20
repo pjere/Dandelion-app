@@ -195,6 +195,62 @@ def trend_patch(enabled: bool) -> ConfigPatch:
 DEFAULT_PATCHES: tuple[ConfigPatch, ...] = (trend_patch(True),)
 
 
+@dataclass(frozen=True)
+class ExpectedValue:
+    """A config value the product deliberately inherits rather than sets.
+
+    Inheriting a default is not the same as choosing one. `trend.ssp` is a deliberate choice
+    (owner decision, 2026-08-20: SSP2-4.5) that happens to coincide with what upstream ships,
+    so no patch is needed — but if a future release changed it, the product's headline
+    scenario would change with it, silently, and every projection would quietly answer a
+    different question. These are checked at install and reported, not overwritten.
+    """
+
+    file: str
+    block: str
+    key: str
+    value: str
+    reason: str
+
+
+EXPECTED_VALUES: tuple[ExpectedValue, ...] = (
+    ExpectedValue(
+        file="weathergen/config.yaml", block="trend", key="ssp", value='"ssp245"',
+        reason="SSP2-4.5 is the shipped headline scenario (owner decision, 2026-08-20)",
+    ),
+    ExpectedValue(
+        file="weathergen/config.yaml", block="trend", key="target_year", value="2050",
+        reason="2050 is the trend horizon the product is built around",
+    ),
+    ExpectedValue(
+        file="weathergen/config.yaml", block="trend", key="baseline_year", value="2020",
+        reason="the present-day end of the trend ramp; changing it rescales every simulated year",
+    ),
+)
+
+
+def check_expectations(code_root: Path,
+                       expected: tuple[ExpectedValue, ...] = EXPECTED_VALUES) -> list[str]:
+    """Report inherited defaults that upstream has since changed. Empty means unchanged."""
+    problems: list[str] = []
+    for e in expected:
+        path = Path(code_root) / e.file
+        if not path.is_file():
+            problems.append(f"{e.file}: missing from the release")
+            continue
+        try:
+            actual = read_scalar_in_block(path.read_text(encoding="utf-8"), e.block, e.key)
+        except KeyError as exc:
+            problems.append(f"{e.file}: {exc} ({e.reason})")
+            continue
+        if actual.strip('"\'') != e.value.strip('"\''):
+            problems.append(
+                f"{e.file}: {e.block}.{e.key} is {actual} but the product expects {e.value} - "
+                f"{e.reason}. Review before shipping this release."
+            )
+    return problems
+
+
 def apply_patches(code_root: Path,
                   patches: tuple[ConfigPatch, ...] = DEFAULT_PATCHES) -> list[PatchRecord]:
     """Apply the declared patches to an extracted release tree."""
