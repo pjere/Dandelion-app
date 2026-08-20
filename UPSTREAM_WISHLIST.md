@@ -51,16 +51,36 @@ registry than the research results were computed on.
 ### 3. Commands that fail should exit non-zero
 
 `extract-rte` and `extract-entsoe` catch their own exceptions, print `[ERREUR] …` and
-**still exit 0** (`pipeline.py:120-123`, `:152-153`). `weathergen fit` prints
-`[trend] enabled but deltas not found: … Run 'fetch-cmip6-deltas' first.` and then fits
-**without the climate trend**, also exiting 0 (`cli.py:100-106`).
+**still exit 0** (`pipeline.py:120-123`, `:152-153`).
 
 Exit status is therefore not a usable success signal, so the job engine has to scan stdout
 for French error markers to decide whether a job worked. That coupling is fragile: a
 reworded message becomes a silently-passing failure in the GUI.
 
-**Ask:** `raise typer.Exit(code=1)` after the error echo, and make the missing-deltas case
-either fail or be an explicit `--no-trend` choice.
+**Ask:** `raise typer.Exit(code=1)` after the error echo.
+
+---
+
+### 3b. The missing-CMIP6-deltas path produces a mislabelled cube
+
+Worth separating from the above, because the consequence is wrong numbers rather than a
+missed error. In `weathergen simulate` with `trend.enabled: true` and no deltas npz:
+
+1. `cli.py:105` prints `[trend] enabled but deltas not found: … Run 'fetch-cmip6-deltas' first.`
+   and continues;
+2. `trend.py:94` loads deltas only `if t.enabled and path and Path(path).exists()`, so it
+   returns `Trend(enabled=True, deltas={})`;
+3. `trend.py:45` — `if not self.enabled or not self.deltas: return cube` — the cube comes
+   back **unchanged**;
+4. `cmd_simulate` embeds the full config in `simulation.nc`'s attributes, which still records
+   the trend as enabled at `ssp245` / 2050.
+
+So a target-year cube carries present-day climate while its own provenance says otherwise,
+at exit code 0. We guard it in `drivers/preflight.py` and refuse to start the job.
+
+**Ask:** either raise when `enabled and not deltas`, or set `enabled=False` on the returned
+`Trend` so the provenance matches what was actually applied. The second is a one-line change
+and removes the mislabelling even if the run continues.
 
 ---
 
@@ -135,3 +155,7 @@ is resolved.)
 - **`run_montecarlo.py` requires `cwd=dispatch_model/`** because `scratchpad/mc/cube_NNN.nc`
   is cwd-relative while the `POWERSIM_WEATHER_CUBE` it exports is script-relative. Resolving
   the cube path against the script would remove the constraint.
+- **`--model` help is stale.** `weathergen fetch-cmip6-deltas --model` documents "default
+  ec_earth3", but `cmip6_cds.py:24` sets `DEFAULT_MODEL = "mpi_esm1_2_lr"` ("EC-Earth3 has
+  broken roocs subsetting on CDS"). The deltas filename embeds the model name, so anyone
+  following the help text fetches a file that `_build_trend` will not look for.

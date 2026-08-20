@@ -87,13 +87,35 @@ divergence easy to miss"). A user would get different prices from yours with no 
 per tag and hash-verifies the seeded files before any projection run; `reports/` is never
 junctioned. Encoded in `anchoring.py` and checked by the selftest. **Needs your OK.**
 
-### 2. `weathergen fit` does not refuse without the CMIP6 deltas
+### 2. The CMIP6 deltas belong to `simulate`, not `fit` — and missing them mislabels the cube
 
-The program says `fit` "refuses until it has run". It does not: `cli.py:100-106` prints
-`[trend] enabled but deltas not found: … Run 'fetch-cmip6-deltas' first.` and **continues,
-fitting without the climate trend, exiting 0**. So the Phase 4 DAG cannot rely on a hard
-prerequisite — it must treat that line as a warning marker and surface it prominently, or
-users will silently get untrended weather.
+*(Corrected 2026-08-20 after a closer read; my first version of this report repeated the
+program's claim that `fit` is the affected command. It is not.)*
+
+The program says `fit` "refuses until it has run". Two things are wrong with that.
+
+**Wrong command.** `_build_trend` is called only from `cmd_simulate` (`cli.py:124`); `cmd_fit`
+never touches the trend. Upstream is explicit about why: "the climate trend is a simulate-TIME
+input (ssp / target year), not part of the fit", so one fitted model serves every scenario.
+The prerequisite edge is `fetch-cmip6-deltas → simulate`.
+
+**Not a refusal — a mislabelled result.** With `trend.enabled: true` and the npz missing:
+
+1. `cli.py:105` prints one line and continues;
+2. `trend.py:94` loads deltas only if the file exists, returning `Trend(enabled=True, deltas={})`;
+3. `trend.py:45` — `if not self.enabled or not self.deltas: return cube` — **the cube is returned
+   unchanged**;
+4. `cmd_simulate` embeds the whole config in `simulation.nc`'s attributes, still claiming
+   `trend.enabled: true`, `ssp245`, target 2050.
+
+So the run produces present-day climate labelled as 2050, exit code 0, and every downstream
+price inherits it. `mc_weather.py:38` takes the same path per draw, so a 50-draw ensemble would
+repeat it fifty times.
+
+Mitigating factor: upstream ships `trend.enabled: false`, so this only bites once someone asks
+for a trend — which the GUI will make easy to do.
+
+**Implemented** (see the addendum below).
 
 ### 3. A fourth path-anchoring mode exists: cwd-relative
 

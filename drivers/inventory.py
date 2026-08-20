@@ -94,6 +94,11 @@ class Job:
     warning_markers: tuple[str, ...] = ()
     produces: tuple[str, ...] = ()
     resumable: bool = False
+    #: job ids that must have succeeded first. Upstream does not enforce these — where a
+    #: missing prerequisite degrades silently, the edge is enforced here instead.
+    requires: tuple[str, ...] = ()
+    #: `drivers.preflight` checks that must pass before the job is allowed to start.
+    preflight: tuple[str, ...] = ()
     notes: str = ""
     upstream_ref: str = ""
 
@@ -282,14 +287,23 @@ JOBS: tuple[Job, ...] = (
 
     # ---------------------------------------------------------------- models
     Job(
-        id="weathergen-cmip6", title="Download CMIP6 deltas",
+        id="weathergen-cmip6", title="Download CMIP6 climate deltas",
         kind=Kind.CONSOLE, stage=Stage.MODELS,
-        argv=("weathergen", "-c", "config.yaml", "fetch-cmip6-deltas"),
+        argv=("weathergen", "-c", "config.yaml", "fetch-cmip6-deltas",
+              "--ssp", "{ssp}", "--target-year", "{target_year}"),
         cwd="weathergen",
         needs_credentials=("CDSAPI_URL", "CDSAPI_KEY"),
-        produces=("weathergen/models/cmip6_deltas_<ssp>_<year>_<model>.npz",),
-        notes="Should run before weathergen-fit when the climate trend is enabled.",
-        upstream_ref="weathergen/weathergen/cli.py:164",
+        produces=("weathergen/models/cmip6_deltas_{ssp}_{target_year}_mpi_esm1_2_lr.npz",),
+        notes=(
+            "Prerequisite of weathergen-simulate (NOT of fit) whenever the climate trend is on. "
+            "One npz per (ssp, target_year) pair, because both are simulate-time inputs. The "
+            "product runs this at install for the config default so the trend toggle works out "
+            "of the box, and again whenever the user picks a scenario it has no deltas for. "
+            "The --model CLI help says 'default ec_earth3' but the real default is "
+            "mpi_esm1_2_lr (cmip6_cds.py:24) - the filename embeds it, so the stale value looks "
+            "for the wrong file."
+        ),
+        upstream_ref="weathergen/weathergen/cli.py:109-119,164; cmip6_cds.py:116-139",
     ),
     Job(
         id="weathergen-fit", title="Fit the weather generator",
@@ -298,23 +312,37 @@ JOBS: tuple[Job, ...] = (
         cwd="weathergen",
         needs_credentials=("CDSAPI_URL", "CDSAPI_KEY"),
         progress_label="weathergen fit",
-        warning_markers=(r"^\[trend\] enabled but deltas not found",),
+        produces=("weathergen/models/fitted.json",),
         notes=(
-            "CORRECTION to the program document: fit does NOT refuse without the CMIP6 deltas. "
-            "It prints '[trend] enabled but deltas not found: <file>. Run fetch-cmip6-deltas "
-            "first.' and CONTINUES with no trend, exiting 0 (cli.py:100-106). Treat that line as "
-            "a warning marker and surface it, or the user silently gets an untrended generator. "
-            "First run also pulls ~4 GB of ERA5 lazily via cdsapi."
+            "Six fixed phases. Needs CDS because the first fit pulls ~4 GB of ERA5 lazily "
+            "(era5_arco). It does NOT touch the climate trend - the trend is a simulate-time "
+            "input, so one fitted model serves every scenario (cli.py:88-89)."
         ),
-        upstream_ref="weathergen/weathergen/cli.py:100-106,155",
+        upstream_ref="weathergen/weathergen/cli.py:22,80-85,155",
     ),
     Job(
         id="weathergen-simulate", title="Simulate weather trajectories",
         kind=Kind.CONSOLE, stage=Stage.MODELS,
         argv=("weathergen", "-c", "config.yaml", "simulate"),
         cwd="weathergen",
+        requires=("weathergen-fit",),
+        preflight=("cmip6-deltas-present",),
         produces=("weathergen/output/simulation.nc",),
-        upstream_ref="weathergen/weathergen/cli.py:157",
+        # After the preflight, this line must never appear. If it does, the check was wrong
+        # or the file vanished mid-run - either way the cube is untrended and unusable, so
+        # this is a FAILURE marker rather than a warning.
+        failure_markers=(r"^\[trend\] enabled but deltas not found",),
+        notes=(
+            "THIS is where the CMIP6 deltas are consumed - _build_trend is called from "
+            "cmd_simulate (cli.py:124), never from fit. With the trend enabled and the deltas "
+            "missing, upstream prints one line and carries on: trend.fit returns "
+            "Trend(enabled=True, deltas={}) (trend.py:94) and Trend.apply then returns the cube "
+            "UNCHANGED (trend.py:45), while simulation.nc's embedded provenance still says the "
+            "trend was applied. A present-day climate labelled as the target year, exit code 0. "
+            "Hence the preflight. Upstream ships trend.enabled: false, so an untrended run is "
+            "only wrong when the user asked for a trend."
+        ),
+        upstream_ref="weathergen/weathergen/cli.py:88-106,124; trend.py:45,86-98",
     ),
     Job(
         id="demand-calibrate", title="Calibrate the demand model",
@@ -390,6 +418,7 @@ JOBS: tuple[Job, ...] = (
         argv=("dispatch-model", "-c", "{config}", "run", "--year", "{year}"),
         cwd="dispatch_model",
         progress_label="{year} windows",
+        preflight=("markup-model-present",),
         notes=(
             "-c defaults to the cwd-relative 'config.yaml'. For a run bundle, pass the absolute "
             "path of the run's overlay - and remember that models_dir/reports_dir/output_dir then "
@@ -404,6 +433,7 @@ JOBS: tuple[Job, ...] = (
         cwd="dispatch_model",
         progress_label="projection {start}-{end}",
         resumable=True,
+        preflight=("markup-model-present",),
         notes="Horizon comes from config.yaml, not from a flag.",
         upstream_ref="dispatch_model/scripts/run_projection_20y.py:76",
     ),
@@ -423,6 +453,9 @@ JOBS: tuple[Job, ...] = (
         cwd="dispatch_model",
         progress_label="monte-carlo {n} draws",
         resumable=True,
+        # Each draw regenerates a weather cube through weathergen, so the trend guard applies
+        # here too — 50 draws of untrended 2050 weather would be a very expensive silent error.
+        preflight=("markup-model-present", "cmip6-deltas-present"),
         notes=(
             "cwd MUST be dispatch_model/: the cube path 'scratchpad/mc/cube_NNN.nc' is resolved "
             "against cwd while the POWERSIM_WEATHER_CUBE the script exports is built from the "
@@ -512,6 +545,49 @@ SEEDED_FROM_RELEASE = (
     "dispatch_model/reports/markup_model.json",
     "availability_model/reports/methodology.md",
 )
+
+
+#: Preflight checks implemented in `drivers.preflight`. A job may only name one of these.
+IMPLEMENTED_PREFLIGHTS = ("cmip6-deltas-present", "markup-model-present")
+
+
+def validate_registry() -> list[str]:
+    """Internal consistency of the registry. Returns a list of problems (empty is good).
+
+    Cheap to run and worth running in CI: the registry is hand-maintained, and a `requires`
+    pointing at a renamed job or a `preflight` naming a check nobody implemented would fail
+    open — the job would simply run unguarded, which is the exact class of silent problem
+    these fields exist to prevent.
+    """
+    problems: list[str] = []
+    ids = {j.id for j in JOBS}
+    if len(ids) != len(JOBS):
+        problems.append("duplicate job ids")
+    for j in JOBS:
+        for dep in j.requires:
+            if dep not in ids:
+                problems.append(f"{j.id}: requires unknown job {dep!r}")
+        for check in j.preflight:
+            if check not in IMPLEMENTED_PREFLIGHTS:
+                problems.append(f"{j.id}: preflight {check!r} is not implemented")
+        for pattern in j.failure_markers + j.warning_markers:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                problems.append(f"{j.id}: bad marker regex {pattern!r} ({exc})")
+        if not j.argv:
+            problems.append(f"{j.id}: empty argv")
+        if j.kind is Kind.CONSOLE and j.argv[0].startswith("{"):
+            problems.append(f"{j.id}: console job should invoke its script, not a placeholder")
+    return problems
+
+
+def job(job_id: str) -> Job:
+    """Look one up, loudly."""
+    for j in JOBS:
+        if j.id == job_id:
+            return j
+    raise KeyError(f"no such job: {job_id!r}")
 
 
 # --------------------------------------------------------------------------------------
@@ -623,12 +699,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--python", type=Path, help="the provisioned venv's python.exe")
     args = ap.parse_args(argv)
 
+    problems = validate_registry()
+    if problems:
+        print("job registry is inconsistent:")
+        for p in problems:
+            print(f"  - {p}")
+        return 2
+
     if args.list or not args.selftest:
         if args.json:
             print(json.dumps([{
                 "id": j.id, "title": j.title, "kind": j.kind.value, "stage": j.stage.value,
                 "argv": list(j.argv), "cwd": j.cwd, "credentials": list(j.needs_credentials),
                 "progress_label": j.progress_label, "resumable": j.resumable,
+                "requires": list(j.requires), "preflight": list(j.preflight),
+                "produces": list(j.produces),
                 "failure_markers": list(j.failure_markers),
                 "warning_markers": list(j.warning_markers),
                 "upstream_ref": j.upstream_ref, "notes": j.notes,
