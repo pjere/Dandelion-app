@@ -264,3 +264,57 @@ def test_dry_run_writes_nothing(tmp_path, capsys):
 
 def test_chunk_limit_stays_under_the_github_asset_cap():
     assert release_data.CHUNK_BYTES < 2_000_000_000
+
+
+# ------------------------------------------------------------------ the wheel audit
+
+def test_parse_no_wheel_reads_the_resolver_diagnostic():
+    out = (
+        "  x No solution found when resolving dependencies:\n"
+        "  |-> Because pymeeus==0.5.12 has no usable wheels and you require\n"
+        "      pymeeus==0.5.12, we can conclude that your requirements are\n"
+        "      unsatisfiable.\n"
+    )
+    assert release_code.parse_no_wheel(out) == {"pymeeus": "0.5.12"}
+
+
+def test_parse_no_wheel_is_empty_on_success():
+    assert release_code.parse_no_wheel("Would install 118 packages\n") == {}
+
+
+def test_audit_exempts_exactly_the_allowlist(monkeypatch, tmp_path):
+    """The audit must ask for wheels everywhere and exempt only reviewed packages."""
+    seen: dict = {}
+
+    def fake_run(argv, cwd=None, timeout=1800, env=None):
+        seen["argv"] = argv
+        return 0, ""
+
+    monkeypatch.setattr(release_code, "run", fake_run)
+    ok, detail = release_code.audit_wheels(["uv"], tmp_path / "python.exe", tmp_path / "lock")
+    assert ok
+    argv = seen["argv"]
+    assert "--only-binary" in argv and ":all:" in argv
+    exempted = [argv[i + 1] for i, a in enumerate(argv) if a == "--no-binary"]
+    assert exempted == list(release_code.SDIST_ALLOWLIST)
+    assert "pymeeus" in detail
+
+
+def test_audit_names_the_offender_and_says_what_to_do(monkeypatch, tmp_path):
+    def fake_run(argv, cwd=None, timeout=1800, env=None):
+        return 1, "Because somepkg==2.0 has no usable wheels and you require somepkg==2.0"
+
+    monkeypatch.setattr(release_code, "run", fake_run)
+    ok, detail = release_code.audit_wheels(["uv"], tmp_path / "python.exe", tmp_path / "lock")
+    assert not ok
+    assert "somepkg==2.0" in detail
+    assert "no compiler" in detail and "SDIST_ALLOWLIST" in detail
+
+
+def test_audit_falls_back_to_raw_output_when_it_cannot_parse(monkeypatch, tmp_path):
+    def fake_run(argv, cwd=None, timeout=1800, env=None):
+        return 1, "network unreachable"
+
+    monkeypatch.setattr(release_code, "run", fake_run)
+    ok, detail = release_code.audit_wheels(["uv"], tmp_path / "python.exe", tmp_path / "lock")
+    assert not ok and "network unreachable" in detail

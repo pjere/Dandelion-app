@@ -1,0 +1,145 @@
+{
+  "_note": "Redacted copy of the owner's v0.1.0 release manifest, kept as Phase 1 gate evidence. Absolute user paths are replaced with <home>: uv echoes build locations into the qualification details, and a machine layout does not belong in a shared repository. The unredacted original stays in dist/.",
+  "tag": "v0.1.0",
+  "commit": "09a24590758957567331d65b02a33ec205179645",
+  "built_at": "2026-08-20T09:51:05+02:00",
+  "built_on": "Windows 11 / AMD64",
+  "source_repo": "https://github.com/pjere/Dandelion.git",
+  "rehearsal": false,
+  "archive": "dandelion-code-v0.1.0.zip",
+  "archive_sha256": "f0e05d66b7bfa9fa2f53bd7f01a2579f3ba6848d166a0df2ff3f859e59d918f6",
+  "archive_bytes": 1173212,
+  "lock_sha256": "b91227fd70b27a739d8f37284e82d31592d2539097b1296fe96ccdee1442c53e",
+  "locked_packages": 118,
+  "built_from_sdist": {},
+  "python": "Python 3.12.10",
+  "uv_version": "uv 0.12.5 (210d1f678 2026-08-14 x86_64-pc-windows-msvc)",
+  "packages": [
+    "powersim_core",
+    "pricemodeling",
+    "weathergen",
+    "demand_model",
+    "res_model",
+    "availability_model",
+    "dispatch_model"
+  ],
+  "notes": [],
+  "qualification": [
+    {
+      "name": "create venv (cpython 3.12)",
+      "ok": true
+    },
+    {
+      "name": "install locked dependencies",
+      "ok": true
+    },
+    {
+      "name": "no unreviewed source builds",
+      "ok": true
+    },
+    {
+      "name": "editable install powersim_core",
+      "ok": true
+    },
+    {
+      "name": "editable install pricemodeling",
+      "ok": true
+    },
+    {
+      "name": "editable install weathergen",
+      "ok": true
+    },
+    {
+      "name": "editable install demand_model",
+      "ok": true
+    },
+    {
+      "name": "editable install res_model",
+      "ok": true
+    },
+    {
+      "name": "editable install availability_model",
+      "ok": true
+    },
+    {
+      "name": "editable install dispatch_model",
+      "ok": true
+    },
+    {
+      "name": "inventory selftest (34 checks)",
+      "ok": true
+    },
+    {
+      "name": "undeclared import 'cdsapi' resolves (pip: cdsapi)",
+      "ok": true
+    },
+    {
+      "name": "undeclared import 'entsoe' resolves (pip: entsoe-py)",
+      "ok": true
+    },
+    {
+      "name": "undeclared import 'open_mastr' resolves (pip: open-mastr)",
+      "ok": true
+    },
+    {
+      "name": "console script 'weathergen'",
+      "ok": true
+    },
+    {
+      "name": "console script 'demand-model'",
+      "ok": true
+    },
+    {
+      "name": "console script 'res-model'",
+      "ok": true
+    },
+    {
+      "name": "console script 'avail-model'",
+      "ok": true
+    },
+    {
+      "name": "console script 'dispatch-model'",
+      "ok": true
+    },
+    {
+      "name": "no NEW undeclared third-party import",
+      "ok": true
+    },
+    {
+      "name": "inherited config values unchanged",
+      "ok": true
+    },
+    {
+      "name": "install dev layer (scratch venv only)",
+      "ok": true
+    },
+    {
+      "name": "pytest root",
+      "ok": true
+    },
+    {
+      "name": "pytest powersim_core",
+      "ok": true
+    },
+    {
+      "name": "pytest weathergen",
+      "ok": true
+    },
+    {
+      "name": "pytest demand_model",
+      "ok": true
+    },
+    {
+      "name": "pytest res_model",
+      "ok": true
+    },
+    {
+      "name": "pytest availability_model",
+      "ok": true
+    },
+    {
+      "name": "pytest dispatch_model",
+      "ok": true
+    }
+  ]
+}

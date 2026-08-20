@@ -1,33 +1,33 @@
 # Phase 1 — Release tooling
 
 **Date:** 2026-08-20
-**Status:** built and exercised end to end. The gate has one open item: **the tag does not exist.**
+**Status:** **complete — gate met.** The owner cut and pushed `v0.1.0`, then ran the full code
+release from the runbook unaided and got `release v0.1.0 qualified — 29/29`.
 
 ---
 
-## The tag
+## The tag — resolved
 
-`v0.1.0` is not in the repository. Checked both ways:
+`v0.1.0` now exists and is pushed: `refs/tags/v0.1.0` → `09a2459`.
+
+Before it existed I rehearsed the cycle against a throwaway tag in my own scratch clone. That
+turned out to be worth more than a stand-in: the owner's real run, fetching from
+`https://github.com/pjere/Dandelion.git`, produced **byte-identical artifacts** to the
+rehearsal built from a local clone —
 
 ```
-git ls-remote --tags origin   ->  0 tags
-git tag -l  (your working copy) ->  empty
+archive sha256  f0e05d66b7bfa9fa2f53bd7f01a2579f3ba6848d166a0df2ff3f859e59d918f6
+lock    sha256  b91227fd70b27a739d8f37284e82d31592d2539097b1296fe96ccdee1442c53e
 ```
 
-Nothing was pushed, and nothing exists locally either, so I could not build a real release. To
-avoid stalling the phase I created a throwaway tag named `v0.1.0` **in my own scratch clone**
-at `main` (`09a2459`) and ran the full cycle against that. Your repository was not touched.
+— which is the reproducibility claim demonstrated rather than asserted: two independent runs,
+two different sources, two different tag objects, same commit, same bytes.
 
-Every artifact from that run is stamped `"rehearsal": true` in its manifest, with the source
-path recorded, and carries the note *"must not be published"*. If your real `v0.1.0` lands on
-`09a2459`, the rehearsal is exactly what a real run will produce; if it lands elsewhere, re-run
-the tool and everything regenerates.
-
-To unblock:
-
-```bash
-git tag -a v0.1.0 -m "release v0.1.0" && git push origin v0.1.0
-```
+The owner's manifest is kept at `docs/evidence/code_manifest-v0.1.0-owner-run.json`, with
+absolute user paths redacted — the path guard refused the raw file, correctly: uv echoes build
+locations into the qualification details, so a manifest carries the machine layout of whoever
+built it. Worth remembering for Phase 7, where run bundles get exported: they need path
+scrubbing alongside secret scrubbing.
 
 ---
 
@@ -42,7 +42,7 @@ git tag -a v0.1.0 -m "release v0.1.0" && git push origin v0.1.0
 | `docs/RUNBOOK.md` | the owner-facing procedure, including what each failing gate means |
 | `src/dandelion/__main__.py` | minimal binary shell — `freeze_support()` first, WebView2 probe, `--self-check` |
 
-118 tests pass (28 new), ruff clean, path guard clean.
+123 tests pass (33 new), ruff clean, path guard clean.
 
 ---
 
@@ -121,6 +121,19 @@ was the wrong gate: the requirement is *no compiler on the user's machine*, and 
 sdist builds fine without one. It is now an allowlist — any source build not reviewed and
 justified in `SDIST_ALLOWLIST` fails the release, and `pymeeus` carries its reason.
 
+**And the second version of the gate was unsound.** It detected source builds by parsing
+`Building <pkg>` out of uv's install output. That works exactly once per machine: uv caches
+the wheel it builds, so the *second* run installs from cache, prints no `Building` line, and
+the check passes without having checked anything. The owner's run shows it — `built_from_sdist`
+is empty even though `pymeeus` has no wheel, because my earlier runs had already warmed the
+cache on that machine.
+
+A gate that passes because it ran before is worse than no gate. It is now a **resolution**
+check — `uv pip install --only-binary :all: --dry-run` with a `--no-binary` exemption per
+allowlist entry — which asks the index, not the cache, and therefore gives the same answer
+cold or warm. Verified both directions: it resolves with the exemption and fails naming
+`pymeeus==0.5.12` without it. The install-output parse is kept as provenance, not as the gate.
+
 ### 2. The upstream test suites are not offline
 
 Twelve `dispatch_model` tests read the built database. But their behaviour depends on a detail
@@ -154,6 +167,26 @@ blaming the code.
 - `weathergen`'s suite takes 2m13s — most of the release's wall-clock.
 - `demand_model` emits 170,558 warnings. Harmless, but it makes the log hard to read.
 
+### 5. Two runbook papercuts, one of which matters beyond the runbook
+
+Getting the owner through the first real release cost three round trips, all documentation
+rather than code:
+
+- **Which directory.** `release_tools/` lives in the app repo, but the tag commands run in the
+  research checkout, and the runbook said neither. Every command block is now labelled.
+- **The Microsoft Store Python.** The owner's `python` resolves under `WindowsApps\`, which
+  runs in an AppContainer that silently redirects writes to `%LOCALAPPDATA%` into a private
+  cache. `python -m venv %LOCALAPPDATA%\dandelion-tools` therefore "succeeded" into
+  `…\Packages\PythonSoftwareFoundation.Python.3.12_…\LocalCache\Local\`, while every later
+  command looked at the real path and failed with *"Le chemin d'accès spécifié est
+  introuvable"*.
+
+The second one is not just a papercut. It is precisely the failure mode a user would hit, and
+it is **evidence for the architecture decision to bundle `uv` and provision our own CPython**
+rather than use whatever Python is on the machine. A Store Python would redirect the entire
+install out from under the wizard, and the wizard would report success. Phase 2 assumed this;
+it is now demonstrated.
+
 ---
 
 ## Gate
@@ -164,14 +197,13 @@ blaming the code.
 | `release-data --dry-run` reports the compressed snapshot size | ✅ ~14.2 GB — feeds D1a |
 | `release-app` builds, measures and stamps | ✅ both packagings measured |
 | Runbook exists and covers every failure mode | ✅ `docs/RUNBOOK.md` |
-| **Owner performs one full cycle unaided** | ⛔ needs the tag first |
+| **Owner performs one full cycle unaided** | ✅ `29/29`, `rehearsal: false`, no notes |
 
 ---
 
 ## What I need from you
 
-1. **Push the tag.** Then run `python release_tools/release_code.py --tag v0.1.0` from the
-   runbook — the gate is you doing it without me.
+1. ~~Push the tag and run the cycle.~~ **Done.**
 2. **D1b, the licensing worksheet.** `release_tools/data_stores.yaml` is filled in with each
    store's sources and the licence to check; the `ship:` decisions and the sign-off are yours.
    Until then the packager only does `--dry-run`.

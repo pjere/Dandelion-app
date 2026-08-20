@@ -13,8 +13,9 @@ QUALIFICATION is the point of this tool. It does not just package: it builds a s
 environment using the *exact procedure the installer will use*, and refuses to publish if
 that procedure does not produce a working install. The checks that matter:
 
-  * nothing is built from source except packages we have reviewed as pure Python, because
-    a user machine has no compiler (see SDIST_ALLOWLIST);
+  * every locked package has a py312/win64 wheel, except reviewed pure-Python exceptions,
+    because a user machine has no compiler (see SDIST_ALLOWLIST). Checked at resolution, so
+    a warm build cache cannot mask it;
   * the seven packages install EDITABLE in ADR-8 order (a regular install silently breaks
     pricemodeling's PROJECT_ROOT anchoring - see docs/phase-reports/phase-0.md);
   * the three lazily-imported, undeclared dependencies are importable;
@@ -131,6 +132,46 @@ _PYTEST_FAIL_RE = re.compile(r"^(?:FAILED|ERROR)\s+(?P<nodeid>\S+)", re.MULTILIN
 def parse_pytest_failures(output: str) -> set[str]:
     """Node ids pytest reported as failed or errored, from its -rfE summary."""
     return {m.group("nodeid").split(" - ")[0] for m in _PYTEST_FAIL_RE.finditer(output)}
+
+
+_NO_WHEEL_RE = re.compile(r"Because (?P<name>[A-Za-z0-9._-]+)==(?P<version>\S+) has no usable wheels")
+
+
+def parse_no_wheel(output: str) -> dict[str, str]:
+    """Packages uv reported as having no usable wheel, from its resolver diagnostic."""
+    return {m.group("name").lower().replace("_", "-"): m.group("version")
+            for m in _NO_WHEEL_RE.finditer(output)}
+
+
+def audit_wheels(uv: list[str], python: Path, lock: Path) -> tuple[bool, str]:
+    """Require a wheel for every locked package except the reviewed exceptions.
+
+    This resolves against the index rather than watching an install, which matters: a warm uv
+    cache reuses a previously built wheel and emits no "Building" line at all, so parsing
+    install output would silently pass on the very machine that has built the package before.
+    A resolution check gives the same answer on a cold and a warm machine.
+
+    The allowlisted packages are pinned to source with --no-binary, which for an sdist-only
+    package is what happens anyway, and keeps the "wheels or nothing" rule exact for the rest.
+    """
+    argv = [*uv, "pip", "install", "--python", str(python),
+            "--only-binary", ":all:", "--dry-run", "-r", str(lock)]
+    for pkg in SDIST_ALLOWLIST:
+        argv += ["--no-binary", pkg]
+    rc, out = run(argv, timeout=1800)
+    if rc == 0:
+        reviewed = ", ".join(sorted(SDIST_ALLOWLIST)) or "none"
+        return True, f"wheels available for every locked package (reviewed exceptions: {reviewed})"
+
+    offenders = parse_no_wheel(out)
+    if offenders:
+        listed = ", ".join(f"{n}=={v}" for n, v in sorted(offenders.items()))
+        return False, (
+            f"no wheel on PyPI for {listed}. A user machine has no compiler, so confirm the "
+            f"package is pure Python and add it to SDIST_ALLOWLIST with the reason, or pin "
+            f"around it."
+        )
+    return False, out.strip()[-800:]
 
 
 _BUILDING_RE = re.compile(r"^\s*(?:Building|Built)\s+(?P<name>[A-Za-z0-9._-]+)==(?P<version>\S+)",
@@ -365,6 +406,11 @@ def build_env(uv: list[str], root: Path, lock: Path,
         return venv, steps, built
     python = venv / "Scripts" / "python.exe"
 
+    ok, detail = audit_wheels(uv, python, lock)
+    steps.append(Step("every locked package has a wheel (or a reviewed exception)", ok, detail))
+    if not ok:
+        return venv, steps, built
+
     rc, out = run([*uv, "pip", "install", "--python", str(python), "-r", str(lock)],
                   timeout=2400)
     steps.append(Step("install locked dependencies", rc == 0,
@@ -387,6 +433,8 @@ def build_env(uv: list[str], root: Path, lock: Path,
                   if unreviewed else f"allowlisted, pure-Python: {reviewed}")
     else:
         detail = "every locked dependency installed from a wheel"
+    # Supplementary and cache-dependent: it records what THIS run actually built, which is
+    # useful provenance, but audit_wheels above is the gate.
     steps.append(Step("no unreviewed source builds", not unreviewed, detail))
     if unreviewed:
         return venv, steps, built
