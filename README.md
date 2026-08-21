@@ -1,4 +1,4 @@
-# Dandelion App
+# Dandelion Studio
 
 Installer and graphical studio for **Dandelion**, the European electricity spot-price model
 at `github.com/pjere/Dandelion`.
@@ -25,6 +25,7 @@ upstream — not a flag, not a config key, not a print statement.
 
 ```
 src/dandelion/     the application (wizard + studio)
+  branding.py        product name, support address, terms of use (D4)
 drivers/           the ONLY place that knows about upstream
   inventory.py       36 jobs: argv, cwd, credentials, progress label, failure markers
   anchoring.py       the 12 relocatable stores and which mechanism relocates each

@@ -17,6 +17,8 @@ import os
 import sys
 from pathlib import Path
 
+from dandelion.branding import DISCLAIMER_VERSION, PRODUCT_NAME, disclaimer_sha256
+
 __version__ = "0.0.1"
 
 APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Dandelion"
@@ -56,12 +58,12 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
     if "--version" in argv:
-        print(f"Dandelion {__version__}")
+        print(f"{PRODUCT_NAME} {__version__}")
         return 0
 
     if "--self-check" in argv:
         # What the release build asserts about a frozen binary before publishing it.
-        print(f"Dandelion {__version__}")
+        print(f"{PRODUCT_NAME} {__version__}")
         print(f"frozen           : {getattr(sys, 'frozen', False)}")
         print(f"python           : {sys.version.split()[0]}")
         print(f"app dir          : {APP_DIR}")
@@ -69,10 +71,11 @@ def main(argv: list[str] | None = None) -> int:
               f"{'present' if INSTALL_MANIFEST.is_file() else 'absent -> Setup Wizard'}")
         print(f"webview2         : "
               f"{'present' if webview2_present() else 'ABSENT -> browser fallback'}")
+        print(f"disclaimer       : v{DISCLAIMER_VERSION}  sha256 {disclaimer_sha256()[:16]}")
         return 0
 
     mode = "Studio" if INSTALL_MANIFEST.is_file() else "Setup Wizard"
-    print(f"Dandelion {__version__} would start: {mode}")
+    print(f"{PRODUCT_NAME} {__version__} would start: {mode}")
     print("(the interface is built in Phase 2)")
     return 0
 

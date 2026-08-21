@@ -40,8 +40,9 @@ scrubbing alongside secret scrubbing.
 | `release_tools/release_app.py` | builds the exe, runs it, measures it, stamps `latest.json` |
 | `docs/RUNBOOK.md` | the owner-facing procedure, including what each failing gate means |
 | `src/dandelion/__main__.py` | minimal binary shell — `freeze_support()` first, WebView2 probe, `--self-check` |
+| `src/dandelion/branding.py` | D4: product name, support address, and the terms users accept (hashed on acceptance) |
 
-128 tests pass, ruff clean, path guard clean.
+137 tests pass, ruff clean, path guard clean.
 
 ---
 
@@ -240,8 +241,9 @@ it is now demonstrated.
    `UPSTREAM_WISHLIST.md` §2. Excluding MaStR solar and pumped storage is deliberate.
 4. **Create `pjere/dandelion-releases`** (public, empty) — decision D3. Nothing can be
    published until it exists.
-5. **D4 text**: product name, disclaimer wording, support address. You said you would supply
-   these; Phase 2's first wizard page needs them.
+5. ~~D4 text.~~ **Settled: "Dandelion Studio", support address supplied, disclaimer drafted**
+   (`src/dandelion/branding.py`). The disclaimer is plain-language and unreviewed by a lawyer —
+   read it, and get it reviewed if the audience grows beyond people you know.
 
 D3 (how the installer fetches releases from a private repo) and D2 (code signing) are not
 blocking yet but both land in Phase 2.
