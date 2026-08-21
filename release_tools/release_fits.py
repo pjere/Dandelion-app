@@ -39,7 +39,15 @@ for _stream in (sys.stdout, sys.stderr):
 #: The placeholder `save_params` leaves in the JSON tree for every numpy array it moved out.
 ARRAY_TAG = "__ndarray__"
 
-CHUNK_BYTES = 1_500_000_000        # GitHub caps a release asset at 2 GB
+#: Hard limit on one published file. GitHub refuses a release asset above 2 GB.
+ASSET_LIMIT = 2_000_000_000
+
+#: Raw bytes packed into one chunk. Compression only shrinks, so this normally keeps the
+#: output well under ASSET_LIMIT - but a SINGLE artifact larger than this cannot be split,
+#: and then the output size depends entirely on how well that one file compresses. The
+#: weathergen sidecar is already 2.8 GB and doubled during a single afternoon, so the output
+#: is checked explicitly rather than assumed.
+CHUNK_BYTES = 1_500_000_000
 
 #: Per package: the fitted artifacts the model code actually loads, by the name it loads them
 #: under. Sidecars are derived, not listed. Verified against the load sites in each package.
@@ -205,6 +213,12 @@ def verify_loadable(python: Path, source: Path, sets: list[FitSet]) -> dict[str,
     return results
 
 
+def oversized_artifacts(sets: list[FitSet]) -> list[Artifact]:
+    """Artifacts too big to share a chunk, whose packed size therefore rides on their own
+    compressibility alone."""
+    return [a for fs in sets for a in fs.artifacts if a.bytes > CHUNK_BYTES]
+
+
 def write_chunks(source: Path, sets: list[FitSet], out_dir: Path, level: int = 10) -> list[dict]:
     import tarfile
 
@@ -244,6 +258,16 @@ def write_chunks(source: Path, sets: list[FitSet], out_dir: Path, level: int = 1
                        "sha256": sha256_file(path)})
     elif path.exists():
         path.unlink()
+
+    over = [c for c in chunks if c["bytes"] > ASSET_LIMIT]
+    if over:
+        listed = ", ".join(f"{c['name']} ({human(c['bytes'])})" for c in over)
+        raise SystemExit(
+            f"chunk over the {human(ASSET_LIMIT)} publishing limit: {listed}.\n"
+            f"A chunk holding one artifact bigger than {human(CHUNK_BYTES)} cannot be split "
+            f"further, so its size depends on that file's compressibility. Either lower "
+            f"--level (worse), host this release off GitHub, or split the artifact upstream."
+        )
     return chunks
 
 
@@ -332,6 +356,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print("\ndry run - nothing written.")
         return 0
+
+    for art in oversized_artifacts(sets):
+        print(f"\n   NOTE: {art.package}/{art.name} is {human(art.bytes)}, larger than the "
+              f"{human(CHUNK_BYTES)} chunk size. It gets a chunk to\n         itself, so the "
+              f"published size depends on how well that one file compresses.")
 
     out_dir = (args.out or Path("dist") / f"fits-{args.tag}").resolve()
     print(f"\npackaging -> {out_dir}")

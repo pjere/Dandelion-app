@@ -341,3 +341,17 @@ def test_dispatch_markup_is_deliberately_not_packaged():
 def test_fits_require_a_code_tag(capsys):
     with pytest.raises(SystemExit):
         release_fits.main(["--source", "."])
+
+
+def test_an_artifact_larger_than_a_chunk_is_flagged():
+    """It cannot be split, so its published size rides on its own compressibility."""
+    big = release_fits.Artifact(package="weathergen", name="fitted.json.npz",
+                                bytes=release_fits.CHUNK_BYTES + 1)
+    small = release_fits.Artifact(package="res_model", name="calibrated_res.json", bytes=8000)
+    fs = release_fits.FitSet(package="x", artifacts=[big, small])
+    assert release_fits.oversized_artifacts([fs]) == [big]
+
+
+def test_the_publishing_limit_is_the_github_asset_cap():
+    assert release_fits.ASSET_LIMIT == 2_000_000_000
+    assert release_fits.CHUNK_BYTES < release_fits.ASSET_LIMIT

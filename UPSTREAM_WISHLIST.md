@@ -43,14 +43,16 @@ This mattered moderately when a published snapshot could carry the built lake. S
 product ships **no data**, every user now runs this step, so a wrong guess means every user's
 plant fleet differs from the reference — silently, because a smaller registry still dispatches.
 
-**Reconstructed from the owner's lake and MaStR landing DB** (2026-08-20), pending confirmation:
+**Reconstructed from the owner's lake and MaStR landing DB, and confirmed by the owner**
+(2026-08-20):
 
 ```python
 from powersim_core import registry
 from pricemodeling.registries import cohort, mastr, odre, opsd, repd
 
 mastr.fetch_bulk("20260715")                      # Gesamtdatenexport_20260715.zip, ~3 GB
-mastr.load_bulk_to_sqlite("20260715", data=[...]) # landing DB holds ALL technologies
+mastr.load_bulk_to_sqlite("20260715", data=[        # only what build() then reads
+    "combustion", "nuclear", "biomass", "hydro", "wind"])
 registry.write(mastr.build(as_of="2026-07-16", tables=[
     "combustion_extended", "nuclear_extended", "biomass_extended",
     "hydro_extended", "wind_extended",            # NOT solar_extended, NOT storage_extended
@@ -70,10 +72,17 @@ coal, lignite and nuclear but **no solar and no hydro_psp**, while the landing D
 `solar_extended` and `storage_extended` — so the subset was chosen at `build(tables=...)`, not
 at load time. That is a deliberate, non-default choice no wrapper could have guessed.
 
-**Still unconfirmed:** the `data=[...]` list passed to `load_bulk_to_sqlite`, and whether
-excluding `storage_extended` (pumped hydro) is intentional or an oversight.
+**Confirmed by the owner (2026-08-20):** excluding `solar_extended` and `storage_extended` is
+deliberate. Pumped storage reaches dispatch through ENTSO-E installed capacity
+(`io/entsoe_hist.py`, `neighbour_availability.py`) rather than the registry, so nothing is
+lost there. German solar is accepted as a known simplification — the ~5 million MaStR solar
+units would dominate the build.
 
-**Ask (small):** confirm the two open points above. **Ask (better):** a
+The owner's own `data=[...]` list covered every technology; ours is narrowed to the five
+tables `build()` actually reads, which produces an identical registry from a much shorter
+parse. That is the only intentional divergence from what the owner ran.
+
+**Ask:** a
 `python -m pricemodeling ingest-registry <source>` command, which would delete the wrapper and
 make the choice reviewable in the repo rather than in a shell.
 

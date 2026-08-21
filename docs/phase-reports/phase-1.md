@@ -36,12 +36,12 @@ scrubbing alongside secret scrubbing.
 | tool | what it does |
 |---|---|
 | `release_tools/release_code.py` | tag → archive + lock + manifest, and refuses to publish unless a scratch install built the installer's way actually works |
+| `release_tools/release_fits.py` | packages the owner's fitted models, and refuses to ship a fit that will not load |
 | `release_tools/release_app.py` | builds the exe, runs it, measures it, stamps `latest.json` |
 | `docs/RUNBOOK.md` | the owner-facing procedure, including what each failing gate means |
 | `src/dandelion/__main__.py` | minimal binary shell — `freeze_support()` first, WebView2 probe, `--self-check` |
 
-114 tests pass, ruff clean, path guard clean. (33 were added in this phase; 9 went with
-`release_data.py`.)
+128 tests pass, ruff clean, path guard clean.
 
 ---
 
@@ -77,6 +77,34 @@ first fit, and MaStR is 7.4 GB every user downloads themselves.
 The secondary effect is worth more than the tool: `release_data.py` was the **single sanctioned
 exception** to "never read the owner's working copy". With it gone, no tool in the repository
 reaches outside it, and `path_guard.py` now enforces that with no exemptions at all.
+
+### Model fits — measured and packaged
+
+**Owner decision, 2026-08-20: ship the fitted models.** They are the owner's own work, not a
+redistribution of anyone's data, and they are what makes a user's numbers match the reference
+rather than merely resemble it.
+
+```
+weathergen         fitted.json 153.5 KB + fitted.json.npz 2.6 GB
+                   wind100.json + .npz, cmip6_deltas_ssp245_2050_mpi_esm1_2_lr.npz
+demand_model       calibrated.json + .npz, residual.json + .npz     (782 KB)
+res_model          calibrated_res / residual_res / wind_transfers   ( 19 KB)
+availability_model calibrated_availability.json                     ( 13 KB)
+
+TOTAL 2.6 GB raw -> 1.3 GB packed, 3 chunks, all 8 fits load
+```
+
+Everything except the weathergen generator's array sidecar is under 1 MB; that one file is
+**2.6 GB and doubled during this session's afternoon**. Compression halves it.
+
+The payoff is bigger than the saved calibration time. The only two things that pull ERA5 from
+CDS are `weathergen fit` and `res-model calibrate`; ship both fits and neither ever runs, and
+the CMIP6 deltas ship too. **The CDS account plausibly drops off the critical path entirely** —
+one of three credentials, plus a ~4 GB download and hours of fitting. Phase 2 should confirm
+that end to end before promising it.
+
+`dispatch_model` is deliberately excluded: `markup_model.json` is tracked and already ships
+inside the code release, and two copies would have no tie-break rule.
 
 ### App binary
 
@@ -143,6 +171,23 @@ blaming the code.
   `release v0.1.0 qualified`. That is the one sentence this tool must never say wrongly. It now
   reports NOT QUALIFIED and writes the artifacts marked unpublishable.
 
+### 3b. The fits packager caught a refit in flight, then a flaw in itself
+
+On its first run against the owner's checkout it refused to package, reporting
+`weathergen/models/fitted.json references arrays but fitted.json.npz is missing`. That looked
+like a lost file; it was a **refit in progress** — the JSON written, the 2.6 GB sidecar not yet.
+Forty minutes later the pair was complete and loaded cleanly. Exactly the guard working: a
+packager that swept the directory would have shipped an unloadable fit, and the user would have
+discovered it hours into their first run.
+
+It also exposed a flaw in my own chunker. It caps *input* bytes per chunk, which normally keeps
+the compressed output well under GitHub's 2 GB asset limit — but a **single artifact larger
+than the chunk size cannot be split**, so its published size rides entirely on how well that
+one file compresses. The weathergen sidecar is 2.6 GB and happened to halve, landing at 1.3 GB.
+Had it compressed poorly it would have exceeded the limit and been rejected at upload, after the
+whole cycle had run. The output size is now checked explicitly, and an unsplittable artifact is
+called out before packaging rather than discovered after.
+
 ### 4. Smaller things
 
 - `shutil.rmtree` cannot delete a git object store on Windows (read-only packfiles), leaving a
@@ -191,9 +236,12 @@ it is now demonstrated.
 
 1. ~~Push the tag and run the cycle.~~ **Done.**
 2. ~~D1b licensing / D1a hosting.~~ **Resolved: no data ships.**
-3. **The registry sequence** (still open from Phase 0) — nothing in the tree composes
-   `download() → build() → registry.write()`. This was a nice-to-have when a snapshot could
-   carry the built lake; with rebuild-only it is on **every user's** critical path.
+3. ~~The registry sequence.~~ **Reconstructed from the lake and confirmed** — see
+   `UPSTREAM_WISHLIST.md` §2. Excluding MaStR solar and pumped storage is deliberate.
+4. **Create `pjere/dandelion-releases`** (public, empty) — decision D3. Nothing can be
+   published until it exists.
+5. **D4 text**: product name, disclaimer wording, support address. You said you would supply
+   these; Phase 2's first wizard page needs them.
 
 D3 (how the installer fetches releases from a private repo) and D2 (code signing) are not
 blocking yet but both land in Phase 2.

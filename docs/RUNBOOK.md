@@ -136,9 +136,24 @@ suites were skipped.
 
 ### Publish
 
-Upload all three files as assets of the GitHub release for the tag. **Where** is decision D3 —
-`pjere/Dandelion` is private and no PAT may ever be baked into the installer, so this needs a
-public releases-only repository, or hosting alongside the data snapshot.
+**Decision D3, 2026-08-20: a public releases-only repository.** `pjere/Dandelion` stays
+private; a separate public repo — `pjere/dandelion-releases` — carries nothing but release
+assets. The installer runs on strangers' machines and can therefore hold no credential: any
+token baked into a distributed binary is a published token. Anonymous fetch is the only
+workable shape.
+
+Create it once (public, empty, no code), then per release create a GitHub release tagged
+`v0.1.0` there and upload:
+
+| asset | from |
+|---|---|
+| `dandelion-code-v0.1.0.zip` | `dist/v0.1.0/` |
+| `constraints.lock` | `dist/v0.1.0/` |
+| `code_manifest.json` | `dist/v0.1.0/` |
+| `fits.NNN.tar.zst` + `fits_manifest.json` | the fits cycle below |
+
+Nothing private leaks: the archive is exactly what a user installs and runs anyway. What stays
+private is the repository's history, issues and unreleased work.
 
 ---
 
