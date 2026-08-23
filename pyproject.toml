@@ -6,6 +6,18 @@ license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 
+# The application's own runtime. Deliberately small: the science stack lives in the
+# per-release environment the installer provisions, never in the app itself.
+dependencies = [
+    "nicegui>=2.0",       # the wizard and Studio UI
+    "pywebview>=5.0",     # native window host; falls back to a browser when WebView2 is absent
+    "keyring>=25.0",      # credentials -> Windows Credential Manager, never a file
+    "psutil>=5.9",        # process-tree inspection when cancelling a job
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6", "pyinstaller>=6.0", "pyyaml>=6.0", "zstandard>=0.22"]
+
 [tool.ruff]
 line-length = 110
 target-version = "py312"

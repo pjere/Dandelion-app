@@ -74,10 +74,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f"disclaimer       : v{DISCLAIMER_VERSION}  sha256 {disclaimer_sha256()[:16]}")
         return 0
 
-    mode = "Studio" if INSTALL_MANIFEST.is_file() else "Setup Wizard"
-    print(f"{PRODUCT_NAME} {__version__} would start: {mode}")
-    print("(the interface is built in Phase 2)")
-    return 0
+    if "--headless-check" in argv:
+        # Builds the interface and exits. This is what proves a frozen binary carries
+        # NiceGUI's static assets: they are loaded when the page is constructed, so a
+        # missing bundle fails here rather than as a blank window on a user's machine.
+        from dandelion.wizard import run as run_wizard
+
+        run_wizard(headless_check=True)
+        print("interface built OK")
+        return 0
+
+    force = None
+    if "--browser" in argv:
+        force = "browser"
+    elif "--native" in argv:
+        force = "native"
+
+    if INSTALL_MANIFEST.is_file():
+        print(f"{PRODUCT_NAME} {__version__}: Studio is built in a later phase.")
+        return 0
+
+    from dandelion.wizard import run as run_wizard
+
+    return run_wizard(force_mode=force)
 
 
 if __name__ == "__main__":

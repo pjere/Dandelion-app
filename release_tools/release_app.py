@@ -93,6 +93,15 @@ def build(version: str, out_dir: Path, onedir: bool, work: Path) -> Path:
         # Console for now: the wizard has diagnostics to print and Phase 2 decides the
         # windowed/native question on clean-VM evidence, not here.
         "--console",
+        # NiceGUI ships its interface as package data - JS, CSS, fonts, Vue components.
+        # PyInstaller's import analysis cannot see files that are only ever opened at
+        # runtime, so without this the binary starts and then serves a blank page.
+        "--collect-all", "nicegui",
+        # pywebview loads its Windows backend by name, not by import.
+        "--collect-submodules", "webview",
+        "--hidden-import", "webview.platforms.edgechromium",
+        # keyring finds its backend through entry points, which are similarly invisible.
+        "--collect-all", "keyring",
         str(ENTRY),
     ]
     print("   " + " ".join(argv[len(pyinstaller):]))
