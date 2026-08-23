@@ -69,7 +69,8 @@ compressing 8× (16.5 GB → 2.2 GB) and ERA5 not compressing at all (0.92).
 **Owner decision, 2026-08-20: the product ships no built databases.** Users bring their own
 credentials and rebuild locally, so D1b (licensing) and D1a (hosting) both dissolve — there is
 no redistribution to license or host. `release_data.py` and its worksheet were removed
-accordingly (recoverable from git history at `d5acb9d`).
+accordingly, in the commit *"Ship no built databases: drop the data packager and its
+exemption"* — the files are recoverable from that commit's parent.
 
 The measurement is kept here because it is the cost of the alternative, and because two of its
 numbers still matter to Phase 2: ERA5 is 4 GB that every user must now pull from CDS on their
