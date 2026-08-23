@@ -64,3 +64,21 @@ Phase 0 complete — see [docs/phase-reports/phase-0.md](docs/phase-reports/phas
 Open asks for the owner are listed at the end of that report;
 [UPSTREAM_WISHLIST.md](UPSTREAM_WISHLIST.md) ranks the (optional) upstream changes that would
 simplify this product.
+
+## Licence
+
+Dandelion Studio is free software under the **GNU General Public License v3.0 or later**
+(`GPL-3.0-or-later`). The full text is in [LICENSE](LICENSE).
+
+Two things this does *not* cover:
+
+- **The model.** `github.com/pjere/Dandelion` is a separate work with its own terms. This
+  repository is a wrapper that fetches and drives it; the two are distributed separately and
+  communicate as separate programs.
+- **The data.** Nothing is redistributed here. Users download from RTE, ENTSO-E,
+  Météo-France, Elexon, Copernicus and the plant registries under their own credentials, and
+  each provider's terms apply to them.
+
+The dependencies the installer fetches carry their own licences, including copyleft ones
+(`open-mastr` is AGPL-3.0, `lunardate` is GPL-3.0). They are installed from PyPI onto the
+user's machine rather than redistributed here, and all are compatible with GPL-3.0.

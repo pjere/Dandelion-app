@@ -20,6 +20,15 @@ PRODUCT_NAME = "Dandelion Studio"
 #: Where a stuck user goes. Owner decision, 2026-08-20.
 SUPPORT_EMAIL = "pierre@pjeremie.org"      # path-guard: allow
 
+#: Copyright holder named in the GPL notice. INFERRED from the support address — correct it
+#: if the legal name differs, since this is the name the licence would be enforced under.
+COPYRIGHT_HOLDER = "Pierre Jérémie"        # path-guard: allow
+COPYRIGHT_YEAR = "2026"
+
+#: Owner decision, 2026-08-20. The full text is in LICENSE at the repository root.
+LICENSE_SPDX = "GPL-3.0-or-later"
+LICENSE_NAME = "GNU General Public License v3.0 or later"
+
 #: One line, for window titles and the installer's header.
 TAGLINE = "European electricity price scenarios"
 
@@ -80,6 +89,21 @@ liable for any claim, damages or other liability — including lost profits, los
 business interruption — arising from the software or from the use of, or reliance on, anything
 it produces. Some jurisdictions do not allow limits on certain liabilities, so parts of this
 paragraph may not apply to you.
+
+LICENCE
+
+{PRODUCT_NAME} is free software: you may use, study, share and modify it under the terms of the
+{LICENSE_NAME} ({LICENSE_SPDX}), as published by the Free Software Foundation. The full text is
+in the LICENSE file distributed with this software, and at https://www.gnu.org/licenses/.
+
+If you distribute a modified version, the same licence applies to it and you must make your
+source available. Nothing in these terms of use restricts the rights that licence grants you;
+where the two differ, the licence governs.
+
+The model this software drives, and the data you download with it, are covered separately —
+see their own terms.
+
+Copyright (C) {COPYRIGHT_YEAR} {COPYRIGHT_HOLDER}
 
 SUPPORT
 

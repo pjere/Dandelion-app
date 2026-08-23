@@ -244,6 +244,13 @@ it is now demonstrated.
 5. ~~D4 text.~~ **Settled: "Dandelion Studio", support address supplied, disclaimer drafted**
    (`src/dandelion/branding.py`). The disclaimer is plain-language and unreviewed by a lawyer —
    read it, and get it reviewed if the audience grows beyond people you know.
+6. **Licence: GPL-3.0-or-later** on `dandelion-app` (owner decision, 2026-08-20; `LICENSE`,
+   verbatim 35,149-byte text). Two things follow:
+   - `pjere/Dandelion` is **still unlicensed**, which means all rights reserved. Users fetch
+     and run it, so until it carries a licence they have no permission to. This is the one
+     remaining legal blocker to shipping.
+   - The copyright holder in the notice was **inferred** from the support address. Correct
+     `COPYRIGHT_HOLDER` in `branding.py` if the legal name differs.
 
 D3 (how the installer fetches releases from a private repo) and D2 (code signing) are not
 blocking yet but both land in Phase 2.

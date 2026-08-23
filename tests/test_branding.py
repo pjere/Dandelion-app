@@ -75,3 +75,44 @@ def test_acceptance_hash_is_stable_and_content_bound():
 
 def test_disclaimer_version_is_declared():
     assert branding.DISCLAIMER_VERSION
+
+
+# ---------------------------------------------------------------------- licence (GPL-3.0)
+
+def test_licence_is_declared():
+    assert branding.LICENSE_SPDX == "GPL-3.0-or-later"
+    assert "General Public License" in branding.LICENSE_NAME
+
+
+def test_licence_file_is_the_full_gpl3_text():
+    """A truncated or paraphrased licence grants nothing. Check it structurally."""
+    import re
+
+    text = (Path(__file__).resolve().parents[1] / "LICENSE").read_text(encoding="utf-8")
+    assert text.splitlines()[0].strip() == "GNU GENERAL PUBLIC LICENSE"
+    assert "Version 3, 29 June 2007" in text
+    assert "TERMS AND CONDITIONS" in text
+    assert "Preamble" in text
+    assert "How to Apply These Terms to Your New Programs" in text
+    sections = {int(m) for m in re.findall(r"^\s{2}(\d{1,2})\. ", text, re.MULTILINE)}
+    assert sections == set(range(18)), f"missing sections: {set(range(18)) - sections}"
+
+
+def test_the_disclaimer_states_the_licence_and_does_not_override_it():
+    text = branding.DISCLAIMER
+    assert branding.LICENSE_SPDX in text
+    assert "free software" in text.lower()
+    # the terms of use must not appear to take away what the licence grants
+    assert "where the two differ, the licence governs" in text.lower()
+
+
+def test_the_disclaimer_carries_a_copyright_notice():
+    assert f"Copyright (C) {branding.COPYRIGHT_YEAR}" in branding.DISCLAIMER
+    assert branding.COPYRIGHT_HOLDER in branding.DISCLAIMER
+
+
+def test_the_disclaimer_separates_app_licence_from_model_and_data():
+    """GPL covers this wrapper only; the model and the data have their own terms."""
+    text = branding.DISCLAIMER.lower()
+    assert "the model this software drives" in text
+    assert "covered separately" in text
