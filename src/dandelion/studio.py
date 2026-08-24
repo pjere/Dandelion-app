@@ -23,9 +23,14 @@ from dandelion.jobs import JobEngine, summarise  # noqa: E402
 from dandelion.manifest import InstallManifest  # noqa: E402
 from dandelion.paths import Install, default_install  # noqa: E402
 from dandelion.ui import choose_window_mode, free_port  # noqa: E402
+from drivers.inventory import job as find_job  # noqa: E402
 
 SEVERITY_COLOUR = {"fresh": "text-positive", "ageing": "text-warning",
                    "stale": "text-negative", "unknown": "text-grey-5"}
+
+#: Years upstream calibrated against: 2019 normal, 2022 the crisis, 2023-24 high renewables
+#: (scripts/backfill_entsoe.py:25). A free-text year would invite one with no data behind it.
+BACKTEST_YEARS = [2019, 2022, 2023, 2024]
 
 
 def directory_size(path: Path) -> int:
@@ -64,6 +69,9 @@ class Studio:
         self.history: list[str] = []
         self.body: ui.column | None = None
         self._picture: freshness.DataPicture | None = None
+        #: (job_id, reason) when the last attempt was refused before it started.
+        self.refusal: tuple[str, str] | None = None
+        self.backtest_year: int = BACKTEST_YEARS[0]
         #: Set by the activity card so a click can repaint just that card. Re-rendering the
         #: whole page from a handler would leave the previous card's timer alive, repainting
         #: into containers that no longer exist.
@@ -206,11 +214,21 @@ class Studio:
                 ui.label("Activity").classes("text-subtitle1")
                 cancel = ui.button("Cancel", on_click=self._cancel).props("flat color=negative")
 
+            refusal_area = ui.column().classes("w-full")
             progress_area = ui.column().classes("w-full")
             buttons = ui.row().classes("q-mt-sm")
 
             def paint() -> None:
                 cancel.set_visibility(self.task is not None and self.task.running)
+                refusal_area.clear()
+                if self.refusal is not None:
+                    job_id, reason = self.refusal
+                    with refusal_area, ui.card().classes("w-full bg-amber-1 q-mb-sm"):
+                        with ui.row().classes("items-center no-wrap"):
+                            ui.icon("info").classes("text-primary")
+                            ui.label(find_job(job_id).title + " did not start").classes(
+                                "text-subtitle2")
+                        ui.label(reason).classes("text-body2")
                 progress_area.clear()
                 with progress_area:
                     running = self.task is not None and self.task.running
@@ -235,6 +253,14 @@ class Studio:
                     running = self.task is not None and self.task.running
                     ui.button("Check the database",
                               on_click=lambda: self._start("status")) \
+                        .props("outline").set_enabled(not running)
+                    year = ui.select(BACKTEST_YEARS, value=self.backtest_year,
+                                     label="Year").props("outlined dense") \
+                        .style("width:110px").bind_value(self, "backtest_year")
+                    year.set_enabled(not running)
+                    ui.button("Back-test that year",
+                              on_click=lambda: self._start(
+                                  "dispatch-backtest", year=int(self.backtest_year))) \
                         .props("outline").set_enabled(not running)
 
             self._repaint_activity = paint
@@ -268,6 +294,13 @@ class Studio:
 
         def work():
             result = self.engine.run(job_id, params)
+            if result.outcome == "refused":
+                #: A refusal is not a failure: nothing ran and nothing changed. It names
+                #: what is missing, which is the one thing the user can act on, so it gets
+                #: its own card rather than a line in a list of finished runs.
+                self.refusal = (job_id, result.reason)
+                return result
+            self.refusal = None
             self.history.append(f"{job_id}: {summarise(result)}"
                                 + (f" — {result.reason}" if result.reason else ""))
             return result
