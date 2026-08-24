@@ -162,11 +162,17 @@ gh auth login
 gh release create v0.1.0 --repo pjere/Dandelion-app --title "Dandelion model v0.1.0" --notes "Code archive, dependency lock and fitted models for Dandelion Studio."
 ```
 
-Then attach the files. **In PowerShell**, so the chunk names expand without listing them:
+Then attach the files. Every command in this runbook is cmd.exe, so the assets are listed
+explicitly rather than globbed — a PowerShell one-liner here fails with
+*"'ForEach-Object' n'est pas reconnu"* if pasted into the same window as everything else.
 
 ```bash
-gh release upload v0.1.0 --repo pjere/Dandelion-app (Get-ChildItem dist0.1.0\dandelion-code-v0.1.0.zip, dist0.1.0\constraints.lock, dist0.1.0\code_manifest.json, distits-v0.1.0\* | ForEach-Object FullName)
+gh release upload v0.1.0 --repo pjere/Dandelion-app --clobber dist0.1.0\dandelion-code-v0.1.0.zip dist0.1.0\constraints.lock dist0.1.0\code_manifest.json distits-v0.1.0its_manifest.json distits-v0.1.0its.000.tar.zst distits-v0.1.0its.001.tar.zst distits-v0.1.0its.002.tar.zst
 ```
+
+`--clobber` overwrites rather than failing, so a dropped upload can simply be re-run. The
+fits chunk is over a gigabyte; check the chunk count in `distits-v0.1.0\` first, since a
+larger fitted model would produce more of them.
 
 The installer needs exactly these names, so do not rename them:
 
