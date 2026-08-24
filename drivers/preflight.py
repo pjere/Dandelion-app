@@ -281,6 +281,67 @@ def check_fr_history(database: Path, year: int) -> Preflight:
                      detail={"hours": hours, "expected": expected})
 
 
+
+# --------------------------------------------------------------------------------------
+# ENTSO-E stack-sizing inputs
+# --------------------------------------------------------------------------------------
+# THE FAILURE THIS PREVENTS
+#
+# `io/entsoe_hist.py:117 load_installed_capacity` swallows a missing table and returns {}:
+#
+#     except Exception:  # noqa: BLE001  (table may not exist yet)
+#         return {}
+#
+# The caller then sizes every neighbour stack from a p99.9-of-generation proxy. Upstream
+# measured the cost on NL 2024 and wrote it in the docstring: "proxy 9.1 GW gas vs 15.6 GW
+# real fleet, i.e. half the CCGT fleet invisible and the zone artificially scarce
+# (+22 EUR/MWh level bias, zero negative prints)".
+#
+# So the backtest completes, prints a full set of metrics, and is wrong by tens of euros
+# per MWh in the affected zones. Nothing in the output says so. Since no shipped entry
+# point fills the table (see ENTSOE_EXTRAS_RUNNER in drivers.inventory), the DEFAULT state
+# of a correctly-followed install is the degraded one — which is why this is a refusal
+# rather than a warning.
+
+def check_stack_inputs(database: Path, year: int) -> Preflight:
+    """Refuse to back-test when installed capacity is missing, since the fallback is silent."""
+    import sqlite3
+
+    check = "stack-inputs-present"
+    database = Path(database)
+    if not database.is_file():
+        return Preflight(False, check, f"There is no database at {database} yet.",
+                         remedy_job="backfill-entsoe-extras", remedy_args={"year": year})
+    try:
+        connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True,
+                                     timeout=2.0)
+        connection.execute("PRAGMA query_only = 1")
+        with connection:
+            present = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            zones = 0
+            if "entsoe_installed_capacity" in present:
+                zones = connection.execute(
+                    "SELECT COUNT(DISTINCT series_key) FROM entsoe_installed_capacity"
+                ).fetchone()[0]
+        connection.close()
+    except sqlite3.DatabaseError as exc:
+        return Preflight(False, check, f"The database could not be read: {exc}")
+
+    if not zones:
+        return Preflight(
+            False, check,
+            "Installed generation capacity has not been downloaded. Without it the model "
+            "sizes each neighbouring country's power stations from observed output "
+            "instead, which upstream measured as making a zone look far smaller than it "
+            "is - around 22 EUR/MWh of price bias, with nothing in the results to say so.",
+            remedy_job="backfill-entsoe-extras", remedy_args={"year": year},
+            detail={"zones": zones},
+        )
+    return Preflight(True, check, f"installed capacity present for {zones} zones",
+                     detail={"zones": zones})
+
+
 def run_all(config_paths: dict[str, Path]) -> list[Preflight]:
     """Convenience for the job engine: run every applicable check it has inputs for."""
     out: list[Preflight] = []
@@ -291,4 +352,6 @@ def run_all(config_paths: dict[str, Path]) -> list[Preflight]:
     if "database" in config_paths and "backtest_year" in config_paths:
         out.append(check_fr_history(config_paths["database"],
                                     int(config_paths["backtest_year"])))
+        out.append(check_stack_inputs(config_paths["database"],
+                                      int(config_paths["backtest_year"])))
     return out

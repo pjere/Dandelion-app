@@ -160,6 +160,12 @@ def declared_preflight(install: Install, tag: str, params: dict[str, object]
                     continue
                 outcome = checks.check_fr_history(
                     install.data_dir / "pricemodeling.db", int(year))
+            elif name == "stack-inputs-present":
+                year = params.get("year")
+                if year is None:
+                    continue
+                outcome = checks.check_stack_inputs(
+                    install.data_dir / "pricemodeling.db", int(year))
             elif name == "markup-model-present":
                 outcome = checks.check_markup_model(
                     install.code_dir(tag) / "dispatch_model" / "reports")
@@ -243,6 +249,12 @@ class JobEngine:
         failure_patterns = [re.compile(p) for p in job.failure_markers]
         warning_patterns = [re.compile(p) for p in job.warning_markers]
         env = credentials.job_environment()
+        # Parameters are also exposed as DANDELION_<NAME>. Some upstream entry points are
+        # module-level functions rather than CLI commands, so the driver invokes them with
+        # `python -c` and a constant runner string; passing values through the environment
+        # keeps that string a constant instead of something built by concatenation.
+        for key, value in (params or {}).items():
+            env[f"DANDELION_{key.upper()}"] = str(value)
         clock = time.monotonic()
 
         self._group = ProcessGroup(f"job-{job_id}")

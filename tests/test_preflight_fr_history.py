@@ -113,3 +113,45 @@ def test_an_entsoe_only_master_is_named_as_such(tmp_path):
     assert "RTE" in result.reason
     assert "could not be read" not in result.reason, "a missing column is not corruption"
     assert result.remedy_job == "extract-rte"
+
+
+# ------------------------------------------------------ ENTSO-E stack-sizing inputs
+
+from drivers.preflight import check_stack_inputs  # noqa: E402
+
+
+def test_missing_installed_capacity_is_refused_not_warned(tmp_path):
+    """io/entsoe_hist.py:117 swallows the missing table and returns {}, and the caller
+    sizes stacks from a generation proxy that upstream measured at +22 EUR/MWh of bias.
+    No shipped entry point fills the table, so the degraded state is the DEFAULT one."""
+    path = tmp_path / "m.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE ingest_log (source TEXT)")
+    con.commit()
+    con.close()
+    result = check_stack_inputs(path, 2019)
+    assert not result.ok
+    assert result.remedy_job == "backfill-entsoe-extras"
+    assert "22" in result.reason, "the measured cost belongs in the message"
+
+
+def test_an_empty_capacity_table_counts_as_missing(tmp_path):
+    """The table existing proves nothing — build_master creates tables it never fills."""
+    path = tmp_path / "m.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE entsoe_installed_capacity (series_key TEXT, value REAL)")
+    con.commit()
+    con.close()
+    assert not check_stack_inputs(path, 2019).ok
+
+
+def test_capacity_for_real_zones_passes(tmp_path):
+    path = tmp_path / "m.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE entsoe_installed_capacity (series_key TEXT, value REAL)")
+    con.executemany("INSERT INTO entsoe_installed_capacity VALUES (?, ?)",
+                    [(z, 1000.0) for z in ("FR", "DE_LU", "BE", "CH", "ES", "GB", "IT_NORTH")])
+    con.commit()
+    con.close()
+    result = check_stack_inputs(path, 2019)
+    assert result.ok and result.detail["zones"] == 7

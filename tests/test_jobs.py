@@ -164,3 +164,27 @@ def test_an_unrelated_parameter_does_not_trigger_a_group(install):
 def test_optional_groups_do_not_disturb_required_placeholders(install):
     argv = render_argv(find_job("dispatch-backtest"), install, "v0.1.0", {"year": 2019})
     assert "2019" in argv
+
+
+def test_parameters_reach_a_runner_through_the_environment(install, monkeypatch):
+    """`backfill-entsoe-extras` invokes module-level upstream functions with `python -c`.
+    The runner is a constant, so its year arrives as DANDELION_YEAR rather than argv."""
+    import dandelion.jobs as jobs
+
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            captured.update(kwargs.get("env") or {})
+            self.stdout, self.returncode, self.pid = iter(()), 0, 0
+
+        def wait(self, *a, **k):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", FakePopen)
+    engine = jobs.JobEngine(install, "v0.1.0")
+    engine.run("backfill-entsoe-extras", {"year": 2019}, preflight=lambda _: None)
+    assert captured.get("DANDELION_YEAR") == "2019"

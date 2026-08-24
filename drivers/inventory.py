@@ -110,6 +110,49 @@ class Job:
 
 # Several pricemodeling commands catch their own exceptions, print a French error line and
 # still exit 0. Exit code alone is therefore NOT a success signal for them.
+# Three ENTSO-E series the dispatch model READS but no shipped entry point WRITES.
+#
+# `pricemodeling.entsoe.series` defines ingest_installed_capacity, ingest_hydro_storage and
+# ingest_ntc, each with a documented rationale. Nothing calls them:
+#   - `ingest_all` (series.py:306) covers prices/load/generation/flows and stops there;
+#   - `extract-entsoe` (pipeline.py:130) ingests FR day-ahead prices only;
+#   - `scripts/backfill_entsoe.py` calls the same four as ingest_all.
+#
+# The owner's own database has all three — 22 `entsoe:cap:*`, 21 `entsoe:hydro:*` and 22
+# `entsoe:ntc:*` sources in its ingest_log — so they were run directly rather than through
+# a reproducible path. A user of this product could not reproduce them at all.
+#
+# What their absence costs, quantified upstream rather than by us:
+#   capacity  io/entsoe_hist.py:117 returns {} when the table is missing, and the caller
+#             falls back to a p99.9-of-generation proxy. Measured on NL 2024: "proxy 9.1 GW
+#             gas vs 15.6 GW real fleet, i.e. half the CCGT fleet invisible and the zone
+#             artificially scarce (+22 EUR/MWh level bias, zero negative prints)".
+#   hydro     "sans lui la valeur de l'eau structurelle ne peut etre calibree que pour la
+#             France, alors que la Suisse - hydraulique a 80 % - est justement la zone ou le
+#             modele derape le plus" (series.py:185).
+#   ntc       without it the model uses one annual scalar per direction, which upstream
+#             measures as wrong at both tails at once (series.py:263).
+#
+# This wraps the three public functions exactly as `scripts/backfill_entsoe.py` wraps the
+# other four — same engine construction, same cwd-relative DB URL, same `_client` helper
+# that the shipped script itself uses. No upstream file is touched.
+ENTSOE_EXTRAS_RUNNER = (
+    "import os;"
+    "from datetime import date;"
+    "from pricemodeling.db import get_engine;"
+    "from pricemodeling.entsoe import series as S;"
+    "eng=get_engine('sqlite:///data/pricemodeling.db');"
+    "cl=S._client(os.environ['ENTSOE_TOKEN']);"
+    "y=int(os.environ['DANDELION_YEAR']);"
+    "s=date(y,1,1);e=date(y,12,31);"
+    "print('=== %d ===' % y, flush=True);"
+    "print('  capacity : %s' % S.ingest_installed_capacity(eng,cl,s,e), flush=True);"
+    "print('  hydro    : %s' % S.ingest_hydro_storage(eng,cl,s,e), flush=True);"
+    "print('  ntc      : %s' % S.ingest_ntc(eng,cl,s,e), flush=True);"
+    "print('DONE', flush=True)"
+)
+
+
 ERREUR = (r"^\[ERREUR\]",)
 
 
@@ -274,6 +317,25 @@ JOBS: tuple[Job, ...] = (
         upstream_ref="pricemodeling/pipeline.py:179",
     ),
     Job(
+        id="backfill-entsoe-extras",
+        title="ENTSO-E installed capacity, hydro reservoirs and NTC",
+        kind=Kind.MODULE, stage=Stage.DATA,
+        argv=("{python}", "-X", "utf8", "-c", ENTSOE_EXTRAS_RUNNER),
+        cwd=".",
+        needs_credentials=("ENTSOE_TOKEN",),
+        resumable=True,
+        produces=("entsoe_installed_capacity", "entsoe_hydro_storage", "entsoe_ntc"),
+        notes=(
+            "Fills the three series `backfill-entsoe` does not. See ENTSOE_EXTRAS_RUNNER for "
+            "why they matter: without installed capacity the model sizes stacks from a "
+            "generation proxy that upstream measured at +22 EUR/MWh of level bias. cwd MUST "
+            "be the code root - the DB URL is the cwd-relative literal used by "
+            "scripts/backfill_entsoe.py. Idempotent via ingest_log. The year is passed as "
+            "DANDELION_YEAR rather than argv so the runner string stays a constant."
+        ),
+        upstream_ref="pricemodeling/entsoe/series.py:185,224,263",
+    ),
+    Job(
         id="build-master", title="Rebuild the hourly master table",
         kind=Kind.MODULE, stage=Stage.DATA,
         argv=("{python}", "-m", "pricemodeling", "build-master"),
@@ -419,7 +481,7 @@ JOBS: tuple[Job, ...] = (
         argv=("dispatch-model", "-c", "config.yaml", "backtest", "--year", "{year}"),
         cwd="dispatch_model",
         progress_label="backtest {year}",
-        preflight=("fr-history-present",),
+        preflight=("fr-history-present", "stack-inputs-present"),
         notes=(
             "The FR leg comes from master_hourly (io/fr_history.py:22), which build_master "
             "fills from the RTE consumption series. ENTSO-E is NOT a substitute: its "
@@ -567,7 +629,7 @@ SEEDED_FROM_RELEASE = (
 
 #: Preflight checks implemented in `drivers.preflight`. A job may only name one of these.
 IMPLEMENTED_PREFLIGHTS = ("cmip6-deltas-present", "markup-model-present",
-                          "fr-history-present")
+                          "fr-history-present", "stack-inputs-present")
 
 
 def validate_registry() -> list[str]:
