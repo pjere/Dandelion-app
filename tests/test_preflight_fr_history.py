@@ -208,8 +208,10 @@ def test_a_complete_install_passes(tmp_path):
 
 def test_a_master_missing_generation_columns_is_refused(tmp_path):
     """Measured: a master built from 2019 alone has no `prod_wind_offshore` column, because
-    France commissioned none before 2022 and build_master PIVOTS whatever RTE reported. The
-    2019 backtest died on exactly that. `conso_realised` being present proves nothing."""
+    build_master PIVOTS whatever RTE reported and France's first non-null offshore value is
+    in 2023. Checked against the owner's full master: it is the ONLY required column that
+    does not reach back to 2014. The 2019 backtest died on exactly that, having passed a
+    preflight that looked only at `conso_realised`."""
     path = tmp_path / "m.db"
     con = sqlite3.connect(path)
     con.execute("CREATE TABLE master_hourly (ts_utc TEXT, conso_realised REAL, "
@@ -221,7 +223,7 @@ def test_a_master_missing_generation_columns_is_refused(tmp_path):
     result = check_fr_history(path, 2019)
     assert not result.ok
     assert "prod_wind_offshore" in result.reason
-    assert "2022" in result.reason, "explain WHY the column is absent"
+    assert "2023" in result.reason, "explain WHY the column is absent"
     assert len(result.detail["missing"]) == 10, "name every missing column, not just one"
 
 

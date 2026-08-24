@@ -53,10 +53,13 @@ MISSING_HOURS_ALLOWED = 12
 #: proves nothing about the rest.
 #:
 #: These columns are created by build_master's PIVOT of the RTE generation series, which
-#: means the master's shape depends on WHICH YEARS were ingested. France commissioned no
-#: offshore wind until 2022, so RTE never reports that category for 2019, and a master
-#: built from 2019 alone has no `prod_wind_offshore` column at all. Measured: the 2019
-#: backtest died with `no such column: prod_wind_offshore` on exactly such a database.
+#: means the master's shape depends on WHICH YEARS were ingested. Measured against the
+#: owner's full 2014-2026 master: every column below carries data from 2014 EXCEPT
+#: `prod_wind_offshore`, whose first non-null value is in 2023 — France had no offshore
+#: wind generation to report before then. So a master built from 2019 alone has no such
+#: column, and the 2019 backtest died with `no such column: prod_wind_offshore` on exactly
+#: that database. Offshore wind is the only member of this list with the problem, which is
+#: why the remedy fetches a 2023 slice specifically.
 FR_HISTORY_COLUMNS = (
     "conso_realised",
     "prod_solar", "prod_wind_onshore", "prod_wind_offshore",
@@ -287,9 +290,9 @@ def check_fr_history(database: Path, year: int) -> Preflight:
             f"The master table is missing {len(missing)} of the columns a backtest reads: "
             f"{', '.join(missing)}. These are created by pivoting the RTE generation "
             f"series, so the table's shape follows whichever years were downloaded — "
-            f"France commissioned no offshore wind before 2022, for instance, so a master "
-            f"built from 2019 alone has no column for it. Downloading a recent year as "
-            f"well and rebuilding the master creates the full set.",
+            f"France reported no offshore wind generation before 2023, for instance, so a "
+            f"master built from 2019 alone has no column for it. Downloading a recent year "
+            f"as well and rebuilding the master creates the full set.",
             remedy_job="extract-rte",
             remedy_args={"only": "generation_per_type", "start": "2023-01-01",
                          "end": "2024-01-01"},
