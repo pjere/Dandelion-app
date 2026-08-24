@@ -16,8 +16,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dev tooling
-        run: python -m pip install --disable-pip-version-check -q pytest ruff pyyaml
+      # Install the project itself, so CI runs against the same dependency set a
+      # developer has. Listing packages by hand here is how CI and local drift apart.
+      - name: Install the project
+        run: python -m pip install --disable-pip-version-check -q -e ".[dev]"
 
       # The rule that keeps the product independent of the owner's machine.
       - name: Path guard

@@ -7,6 +7,7 @@ for it, so an installation genuinely spans days.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -15,8 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from nicegui import app, ui  # noqa: E402
 
 from dandelion import branding, credentials  # noqa: E402
+from dandelion import fits as fits_mod
 from dandelion.background import BackgroundTask, TaskView  # noqa: E402
 from dandelion.credentials import CREDENTIALS  # noqa: E402
+from dandelion.download import sha256_file  # noqa: E402
 from dandelion.paths import Install, check_data_location, default_install  # noqa: E402
 from dandelion.ui import choose_window_mode, free_port  # noqa: E402
 from dandelion.wizard_state import WizardState  # noqa: E402
@@ -420,8 +423,127 @@ class Wizard:
                 ui.button("Skip for now", on_click=skip).props("flat")
 
     def page_models(self) -> None:
-        self._placeholder("Fitted models",
-                          "Download the reference fits (1.3 GB) or fit them yourself.")
+        ui.label("Fitted models").classes("text-h5 q-mb-sm")
+        ui.markdown(
+            "The model needs calibrated parameters before it can project anything. You can "
+            "download the reference ones, or compute your own."
+        ).classes("q-mb-sm")
+        ui.markdown(
+            "**Downloading them is recommended.** Your results then match the reference model "
+            "exactly, and nothing needs to pull ERA5 - which is why the Copernicus account "
+            "becomes optional."
+        ).classes("text-body2 text-grey-7 q-mb-md")
+
+        if self.state.fits_ready and self.task is None:
+            with ui.card().classes("w-full bg-green-1 q-mb-md"):
+                with ui.row().classes("items-center"):
+                    ui.icon("check_circle").classes("text-positive text-h5")
+                    ui.label("The fitted models are installed and verified.") \
+                        .classes("text-body1")
+            with ui.row():
+                ui.button("Continue", on_click=self.advance).props("color=primary")
+                ui.button("Back", on_click=lambda: self.go("credentials")).props("flat")
+            return
+
+        progress_area = ui.column().classes("w-full q-mb-md")
+        buttons = ui.row().classes("q-mt-md")
+
+        def paint() -> None:
+            progress_area.clear()
+            with progress_area:
+                if self.view.current and not self.view.done:
+                    with ui.row().classes("items-center w-full"):
+                        ui.spinner(size="sm")
+                        ui.label(self.view.current).classes("text-body2")
+                    if self.view.fraction is not None:
+                        ui.linear_progress(value=self.view.fraction).classes("w-full")
+                    else:
+                        ui.linear_progress().props("indeterminate").classes("w-full")
+                for done in self.view.steps[-10:]:
+                    ok = done.ok is not False
+                    with ui.row().classes("items-center no-wrap"):
+                        ui.icon("check_circle" if ok else "error").classes(
+                            "text-positive" if ok else "text-negative")
+                        ui.label(done.message).classes("text-body2")
+                if self.view.error:
+                    with ui.card().classes("w-full bg-red-1"):
+                        ui.label("Download stopped").classes("text-subtitle2 text-negative")
+                        ui.label(self.view.error).classes("text-body2 whitespace-pre-wrap")
+                        ui.label("Nothing was lost - starting again resumes from where it "
+                                 "stopped.").classes("text-caption text-grey-7")
+
+            buttons.clear()
+            with buttons:
+                if self.task is not None and self.task.running:
+                    ui.label("Downloading...").classes("text-grey-7")
+                elif self.state.fits_ready:
+                    ui.button("Continue", on_click=self.advance).props("color=primary")
+                else:
+                    label = "Try again" if self.view.error else "Download the fitted models"
+                    ui.button(label, on_click=self._start_fits).props("color=primary")
+                    ui.button("I will fit them myself", on_click=choose_own).props("flat")
+                    ui.button("Back", on_click=lambda: self.go("credentials")).props("flat")
+
+        def choose_own() -> None:
+            self.state.fits_choice = "fit-myself"
+            self.persist()
+            ui.notify(fits_mod.FIT_YOURSELF_COST, type="info", multi_line=True,
+                      classes="w-96")
+            self.advance()
+
+        def poll() -> None:
+            if self.task is None:
+                return
+            if self.view.apply_all(self.task.drain()):
+                if self.task.finished and self.task.succeeded and not self.state.fits_ready:
+                    self.state.fits_ready = True
+                    self.state.fits_choice = "download"
+                    self.persist()
+                paint()
+
+        ui.timer(0.3, poll)
+        paint()
+
+    def _start_fits(self) -> None:
+        from dandelion.provision import RELEASE_BASE
+
+        self.view = TaskView()
+        task = BackgroundTask("Fitted models")
+        self.task = task
+        install = self._configured_install()
+        tag = self.state.code_tag or DEFAULT_TAG
+
+        def work():
+            task.step("Reading the published listing")
+            plan = fits_mod.fetch_plan(RELEASE_BASE, tag, install.app_dir)
+            size = fits_mod.human(plan.download_bytes)
+            task.step(f"{len(plan.chunks)} file(s) to fetch, {size}")
+
+            if fits_mod.already_installed(plan, install.code_dir(tag)):
+                task.step("Already present and verified", ok=True)
+                return plan
+
+            def progress(name, fraction, index, total) -> None:
+                task.progress(f"Downloading {name} ({index} of {total})", fraction)
+
+            chunks = fits_mod.download_fits(plan, RELEASE_BASE, install.app_dir, progress)
+            task.step("Download complete and checksums verified", ok=True)
+
+            task.progress("Unpacking", None)
+            names = fits_mod.extract_fits(chunks, install.code_dir(tag))
+            task.step(f"Unpacked {len(names)} fitted files", ok=True)
+
+            problems = fits_mod.verify_installed(plan, install.code_dir(tag))
+            if problems:
+                raise fits_mod.FitsError("; ".join(problems))
+            task.step("Verified against the published checksums", ok=True)
+
+            for chunk in chunks:                          # the archives are no longer needed
+                chunk.unlink(missing_ok=True)
+            return plan
+
+        task.start(work)
+        self.render()
 
     def page_data(self) -> None:
         self._placeholder("Build the database",
@@ -429,8 +551,102 @@ class Wizard:
 
     def page_finish(self) -> None:
         ui.label("Ready").classes("text-h5 q-mb-sm")
-        ui.markdown("The installation is recorded. Studio opens from the same shortcut.")
-        ui.button("Close", on_click=app.shutdown).props("color=primary")
+
+        written = self._write_manifest()
+        if written is None:
+            with ui.card().classes("w-full bg-amber-1 q-mb-md"):
+                ui.label("The installation is not complete enough to record yet.") \
+                    .classes("text-body1")
+                ui.label("Go back and install the model - everything else can wait.") \
+                    .classes("text-body2")
+            ui.button("Back", on_click=lambda: self.go("runtime")).props("flat")
+            return
+
+        with ui.card().classes("w-full bg-green-1 q-mb-md"):
+            with ui.row().classes("items-center"):
+                ui.icon("check_circle").classes("text-positive text-h5")
+                ui.label(f"{branding.PRODUCT_NAME} is installed.").classes("text-body1")
+            ui.label(f"Model release {written.code.tag} - opening this program again now "
+                     f"starts Studio rather than this wizard.").classes("text-body2")
+
+        gaps = written.missing_for_a_full_run()
+        if gaps:
+            with ui.card().classes("w-full q-mb-md"):
+                ui.label("Still to do").classes("text-subtitle2")
+                for gap in gaps:
+                    with ui.row().classes("items-start no-wrap"):
+                        ui.icon("info").classes("text-primary")
+                        ui.label(gap).classes("text-body2")
+                ui.label("Studio shows these on its home page too - nothing is lost by "
+                         "closing now.").classes("text-caption text-grey-7")
+
+        with ui.expansion("What was recorded").classes("w-full q-mb-md"):
+            ui.label(f"Code {written.code.tag} ({written.code.commit[:12] or 'unknown commit'})") \
+                .classes("text-body2")
+            ui.label(f"Archive {written.code.archive_sha256[:16] or '-'}") \
+                .classes("text-caption text-grey-7")
+            ui.label(f"Fitted models: {written.fits.source}").classes("text-body2")
+            ui.label(f"Terms {written.terms.version} accepted {written.terms.accepted_at}") \
+                .classes("text-caption text-grey-7")
+            ui.label("No credentials are stored in this file - only whether each was tested.") \
+                .classes("text-caption text-grey-7")
+
+        with ui.row():
+            ui.button("Close", on_click=app.shutdown).props("color=primary")
+
+    def _write_manifest(self):
+        """Record the installation. Returns None when there is nothing worth recording."""
+        from dandelion import manifest as manifest_mod
+        from dandelion.paths import SEEDED_FROM_RELEASE, junctions_for
+
+        if not self.state.can_finish:
+            return None
+
+        install = self._configured_install()
+        tag = self.state.code_tag or DEFAULT_TAG
+
+        code_manifest = None
+        published = install.app_dir / f"code_manifest-{tag}.json"
+        if published.is_file():
+            try:
+                code_manifest = json.loads(published.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                code_manifest = None
+
+        seeded = {}
+        for relative in SEEDED_FROM_RELEASE:
+            path = install.store_dir(tag) / relative
+            if path.is_file():
+                seeded[relative] = sha256_file(path)
+
+        fits_record = manifest_mod.FittedModels(
+            source="downloaded" if self.state.fits_ready
+            else ("fit-locally" if self.state.fits_choice == "fit-myself" else "none"),
+            tag=tag if self.state.fits_ready else "",
+        )
+
+        record = manifest_mod.build(
+            app_version=branding_version(),
+            app_root=install.app_root, data_root=install.data_root, tag=tag,
+            code_manifest=code_manifest, wizard_state=self.state, fits=fits_record,
+            junctions={str(j.link): str(j.target) for j in junctions_for(install, tag)},
+            seeded=seeded,
+        )
+
+        # Belt and braces: a manifest gets attached to support emails. If a secret ever
+        # reaches this structure it is a bug in our own code, so refuse to write rather than
+        # claim a scrub that did not happen.
+        stored = list(credentials.stored_environment().values())
+        if not manifest_mod.contains_no_secrets(record, stored):
+            raise RuntimeError(
+                "refusing to write the install record: it contains a stored credential. "
+                "This is a bug - please report it."
+            )
+
+        record.save(install.manifest_file)
+        self.state.finished = True
+        self.persist()
+        return record
 
 
 def run(install: Install | None = None, *, force_mode: str | None = None,
@@ -462,3 +678,13 @@ def run(install: Install | None = None, *, force_mode: str | None = None,
         favicon="🌱",
     )
     return 0
+
+
+def branding_version() -> str:
+    """The application's own version, read where the entry point defines it."""
+    try:
+        from dandelion.__main__ import __version__
+
+        return __version__
+    except Exception:                                    # noqa: BLE001 - never block a finish
+        return "unknown"

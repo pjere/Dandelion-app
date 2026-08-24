@@ -13,10 +13,11 @@ dependencies = [
     "pywebview>=5.0",     # native window host; falls back to a browser when WebView2 is absent
     "keyring>=25.0",      # credentials -> Windows Credential Manager, never a file
     "psutil>=5.9",        # process-tree inspection when cancelling a job
+    "zstandard>=0.22",    # unpacks the fitted-model download
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.6", "pyinstaller>=6.0", "pyyaml>=6.0", "zstandard>=0.22"]
+dev = ["pytest>=8.0", "ruff>=0.6", "pyinstaller>=6.0", "pyyaml>=6.0"]
 
 [tool.ruff]
 line-length = 110

@@ -55,6 +55,19 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+#: HTTP statuses worth trying again. A 404 means the file is not there and will not appear
+#: by asking harder; retrying it five times with backoff just shows the user a spinner for a
+#: minute before telling them what was already known on the first attempt. 429 and 5xx are
+#: genuinely transient, so those do retry.
+RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in RETRYABLE_STATUS
+    return True                                          # connection-level: worth another go
+
+
 def _open(url: str, offset: int, timeout: float):
     headers = {"User-Agent": USER_AGENT}
     if offset:
@@ -113,7 +126,7 @@ def download(url: str, dest: Path, *, sha256: str | None = None,
             break
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
             last_error = exc
-            if attempt == attempts:
+            if attempt == attempts or not _is_retryable(exc):
                 raise DownloadError(_explain(url, exc, partial)) from exc
             time.sleep(min(2 ** attempt, 30))
     else:                                                # pragma: no cover - loop always breaks
