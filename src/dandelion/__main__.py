@@ -74,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"disclaimer       : v{DISCLAIMER_VERSION}  sha256 {disclaimer_sha256()[:16]}")
         return 0
 
+    if "--uninstall" in argv:
+        from dandelion.uninstall_cli import run as run_uninstall
+
+        return run_uninstall(quiet="--quiet" in argv)
+
     if "--headless-check" in argv:
         # Builds the interface and exits. This is what proves a frozen binary carries
         # NiceGUI's static assets: they are loaded when the page is constructed, so a

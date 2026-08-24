@@ -545,9 +545,114 @@ class Wizard:
         task.start(work)
         self.render()
 
+    #: What a full rebuild involves, in the order it runs. Deliberately not upstream's `all`
+    #: command, which omits REMIT, the plant registries and the GB/Elexon ingest.
+    BUILD_PLAN = (
+        ("Weather observations", "Meteo-France SYNOP", None, "about an hour"),
+        ("French generation and load", "RTE", "rte", "several hours"),
+        ("Prices, load and flows", "ENTSO-E, all thirteen zones", "entsoe", "several hours"),
+        ("Outage notifications", "ENTSO-E REMIT", "entsoe", "under an hour"),
+        ("GB market data", "Elexon (no account needed)", None, "under an hour"),
+        ("Plant registries", "MaStR, ODRE, OPSD, REPD", None, "about an hour, ~7 GB"),
+        ("Reconcile and build the master table", "the expensive one", None, "an hour or more"),
+    )
+
     def page_data(self) -> None:
-        self._placeholder("Build the database",
-                          "Runs the ingest with your credentials. This part runs overnight.")
+        ui.label("Build the database").classes("text-h5 q-mb-sm")
+        ui.markdown(
+            "Dandelion Studio ships no market data. This step downloads it using your "
+            "accounts, and it is the long part: **expect it to run overnight** and to use "
+            "roughly 26 GB."
+        ).classes("q-mb-sm")
+        ui.markdown(
+            "You do not have to do it now. Studio runs the same sequence with progress, logs "
+            "and a cancel button, and it can be stopped and resumed - which is the better "
+            "place for something this long."
+        ).classes("text-body2 text-grey-7 q-mb-md")
+
+        with ui.card().classes("w-full q-mb-md"):
+            ui.label("What it downloads").classes("text-subtitle2 q-mb-xs")
+            for label, source, needs, duration in self.BUILD_PLAN:
+                blocked = needs is not None and \
+                    self.state.credential_state(needs) not in ("passed",)
+                with ui.row().classes("items-center no-wrap w-full"):
+                    if blocked:
+                        ui.icon("lock").classes("text-warning")
+                    else:
+                        ui.icon("cloud_download").classes("text-grey-6")
+                    ui.label(label).classes("text-body2")
+                    ui.label(f"- {source}").classes("text-caption text-grey-7")
+                    ui.space()
+                    ui.label(duration).classes("text-caption text-grey-6")
+                if blocked:
+                    ui.label(f"    needs the {needs.upper()} credential, which is not "
+                             f"confirmed yet").classes("text-caption text-warning")
+
+        db_area = ui.column().classes("w-full q-mb-md")
+
+        def initialise() -> None:
+            """A quick, real first step: create the empty database through the junction.
+
+            Seconds rather than hours, but it proves the paths, the link and the environment
+            all work together - which is worth knowing before committing to a night of it.
+            """
+            install = self._configured_install()
+            tag = self.state.code_tag or DEFAULT_TAG
+            task = BackgroundTask("Initialising the database")
+            self.cred_tasks["initdb"] = task
+
+            db_area.clear()
+            with db_area, ui.row().classes("items-center"):
+                ui.spinner(size="sm")
+                ui.label("Creating the database...").classes("text-body2")
+
+            def work():
+                import subprocess
+
+                proc = subprocess.run(
+                    [str(install.python(tag)), "-X", "utf8", "-m", "pricemodeling", "init-db"],
+                    cwd=str(install.code_dir(tag)), env=credentials.job_environment(),
+                    capture_output=True, text=True, timeout=600,
+                    encoding="utf-8", errors="replace",
+                )
+                if proc.returncode != 0:
+                    raise RuntimeError((proc.stderr or proc.stdout).strip()[-400:])
+                return (proc.stdout or "").strip().splitlines()[-1:]
+
+            task.start(work)
+
+            def check() -> None:
+                if not task.finished:
+                    return
+                timer.deactivate()
+                db_area.clear()
+                with db_area:
+                    if task.succeeded:
+                        with ui.row().classes("items-center"):
+                            ui.icon("check_circle").classes("text-positive")
+                            ui.label("The database was created where you asked.") \
+                                .classes("text-body2")
+                        for line in (task.result or []):
+                            ui.label(line).classes("text-caption text-grey-7")
+                    else:
+                        with ui.row().classes("items-center"):
+                            ui.icon("error").classes("text-negative")
+                            ui.label("Could not create the database.").classes("text-body2")
+                        ui.label(str(task.error)).classes("text-caption text-grey-7")
+
+            timer = ui.timer(0.3, check)
+
+        def choose(which: str) -> None:
+            self.state.data_choice = which
+            self.persist()
+            self.advance()
+
+        with ui.row().classes("q-mt-md"):
+            ui.button("Finish setup - build later in Studio",
+                      on_click=lambda: choose("later")).props("color=primary")
+            ui.button("Create the empty database now", on_click=initialise).props("flat") \
+                .set_enabled(self.state.runtime_ready)
+            ui.button("Back", on_click=lambda: self.go("models")).props("flat")
 
     def page_finish(self) -> None:
         ui.label("Ready").classes("text-h5 q-mb-sm")
@@ -644,6 +749,14 @@ class Wizard:
             )
 
         record.save(install.manifest_file)
+
+        # Listed in Windows "Apps & features" only once there is genuinely something to
+        # uninstall - an entry pointing at a failed install is worse than none.
+        from dandelion import uninstall as uninstall_mod
+
+        uninstall_mod.register(install, app_version=record.app_version,
+                               executable=Path(sys.executable), product_name=branding.PRODUCT_NAME)
+
         self.state.finished = True
         self.persist()
         return record
