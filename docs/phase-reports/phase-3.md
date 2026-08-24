@@ -1,9 +1,10 @@
 # Phase 3 — Studio shell and the job engine
 
 **Date:** 2026-08-24
-**Status:** built and exercised against a real installation. **The gate is not met**: it wants a
-one-year backtest run end to end from the window and a cancel verified mid-run, and both need
-data the machine does not have — the ENTSO-E token has not arrived, so the database is empty.
+**Status:** built and exercised against a real installation. Updated 2026-08-24 after the
+ENTSO-E token arrived. Cancellation is now verified on a real upstream job. **The backtest row
+is still not met**, for a reason this report originally got wrong: it needs RTE credentials,
+not the ENTSO-E token. See the correction below.
 
 ---
 
@@ -154,6 +155,89 @@ alone. Unit tests do not reach this class of defect; opening the page does.
 
 ---
 
+## Correction, 2026-08-24: the token did not unblock the backtest
+
+This report said the ENTSO-E token "unblocks the backtest, which in turn unblocks the
+cancellation drill." Half of that was right.
+
+The token arrived. The cancellation drill ran on a real upstream job and passed. The
+backtest did not, and could not have — I had not checked what it reads.
+
+`backtest` opens the year with `load_fr_netload`, which reads `conso_realised` and the
+`prod_*` columns from `master_hourly`. That table is built from **RTE**, and the module
+docstring says the FR leg works "without any ENTSO-E dependency". The ENTSO-E fallback in
+`build_master.py:84` is generation-only — every key is a `prod_*` column — because the two
+sources disagree on consumption by construction (`build_master.py:81`).
+
+Measured rather than argued. 2019 ingested in full, then the master rebuilt:
+
+```
+backfill-entsoe 2019   succeeded in 28m 17s
+  prices    70,063     load   131,353     gen  1,361,139     flows  297,838
+
+build-master           succeeded in 1m 15s
+  master_hourly columns: ts_utc, ts_local, utc_offset_h,
+                         price_da_be … price_da_pt        <- prices, and nothing else
+```
+
+No `conso_realised`, and no `prod_*` either: `build_master.py:120` skips any column not
+already in the frame, so the ENTSO-E fallback **repairs** RTE columns and cannot bootstrap
+them. With no RTE at all it is a no-op.
+
+**An ENTSO-E token does not unblock a backtest. RTE credentials do.**
+
+### What was built in response
+
+`dispatch-backtest` had no preflight, so it would have constructed the config, the
+workbook, the commodity model and every neighbour stack before dying inside pandas.
+
+```
+outcome : refused | did not start
+reason  : The master table has no French demand column. It was built from ENTSO-E data
+          alone, which carries prices and generation but not consumption, so there is
+          nothing for a backtest to read. French demand comes from RTE.
+```
+
+0.0 s, and it names the account that fills the gap. `check_fr_history` distinguishes four
+states that have four different fixes: no database, no master table, a master built without
+RTE, and a year with real gaps in it.
+
+The tolerance for gaps is **absolute, not proportional**. My first version allowed 1%, which
+is 88 hours — enough to accept a missing 29 February as a complete year. A test now pins
+that.
+
+A second gap this exposed: `JobEngine.run` took a `preflight` callable, and nothing ever
+passed one. `validate_registry` checked that every declared check was implemented, so the
+registry looked sound while the checks never ran — the exact fail-open the field exists to
+prevent. `declared_preflight` now wires them in by default.
+
+301 tests.
+
+---
+
+## Cancellation, on a real upstream job
+
+```
+>>> running, process tree = 2 -> [19556, 2024]
+>>> cancelling
+job_object_used : True
+escalated       : False
+survivors       : NONE
+outcome         : cancelled     summary : cancelled after 24s
+independent orphan check: NONE
+```
+
+The gate row is met: cancelled mid-run, no orphans, verified by a separate process listing,
+and a coherent job state.
+
+`escalated: False` is worth reading carefully. It means the job object alone sufficed **for
+this shape** — `backfill_entsoe.py` is a parent and one child. It does not settle the
+grandchild question above, because this job has no worker pool. `run_montecarlo.py` does,
+and that is Phase 6.
+
+
+---
+
 ## Gate
 
 | criterion | status |
@@ -162,8 +246,8 @@ alone. Unit tests do not reach this class of defect; opening the page does.
 | Cancellation leaves no orphans | ✅ verified on real process trees |
 | `status` run end to end from the window | ✅ |
 | Home dashboard with per-source freshness | ✅ 183 sources, 0.015 s |
-| **A one-year backtest from the GUI** | ⛔ needs a built database |
-| **Cancel mid-run, verified by process listing** | ⚠️ proven at the `ProcessGroup` level; not yet through a long GUI job |
+| **A one-year backtest from the GUI** | ⛔ needs RTE credentials, not the ENTSO-E token |
+| **Cancel mid-run, verified by process listing** | ✅ on a real 28-minute upstream job |
 | **Clean Win 11 VM** | ⛔ still outstanding from Phase 2 |
 
 The two blocked rows are the same missing thing: data. A backtest needs history, and history
@@ -175,11 +259,14 @@ from the window, which the backtest would provide.
 
 ## What I need from you
 
-1. **The ENTSO-E token when it arrives.** It unblocks the backtest, which in turn unblocks the
-   cancellation drill. Nothing else is waiting on it.
-2. **A clean Windows VM**, still, and now with a second question attached: whether
+1. ~~The ENTSO-E token.~~ Arrived, stored in Credential Manager, tested against the live API
+   (97 French price hours), and used to ingest 2019 in full. It unblocked the cancellation
+   drill. It did **not** unblock the backtest — see the correction above.
+2. **RTE credentials** — the OAuth client id and secret from RTE's data portal. This is the
+   real backtest blocker. With them: `extract-rte 2019`, `build-master`, then the backtest.
+3. **A clean Windows VM**, still, and now with a second question attached: whether
    `escalated` comes back `False` there. That single value tells us whether the job object
    behaves as the plan assumed on a normal machine.
-3. Nothing else is blocking. Phase 4 (data refresh and model refits) can begin — its pages can
+4. Nothing else is blocking. Phase 4 (data refresh and model refits) can begin — its pages can
    be built and their job definitions exercised against an empty database, the same way Phase 3
    was.
