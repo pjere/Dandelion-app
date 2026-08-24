@@ -30,6 +30,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 
 from dandelion import credentials
 from dandelion.paths import Install
@@ -148,11 +149,25 @@ def declared_preflight(install: Install, tag: str, params: dict[str, object]
     Without this the `preflight` field on a job is documentation: the registry validates
     that every declared check is implemented, but nothing would actually call it, and the
     job would run unguarded — the precise fail-open the field exists to prevent.
+
+    `needs_credentials` had the same defect and is enforced here too. It was declared on
+    nine jobs and read in exactly two places, both of which only print it: the JSON dump
+    (inventory.py:795) and the CLI listing (inventory.py:810). A job whose token was
+    missing therefore started anyway, and upstream's response to that is not reliably an
+    error — `_do` records an empty ENTSO-E payload as status='ok', so the run can report
+    success having written nothing.
     """
     from drivers import preflight as checks
 
     def run(job_id: str) -> str | None:
         job = find_job(job_id)
+        if job.needs_credentials:
+            stored = credentials.status_by_field()
+            absent = [f for f in job.needs_credentials if not stored.get(f)]
+            if absent:
+                labels = ", ".join(credentials.field_label(f) for f in absent)
+                return (f"This needs your {labels} before it can run. Nothing was "
+                        f"downloaded, so no data has changed.")
         for name in job.preflight:
             if name == "fr-history-present":
                 year = params.get("year")
@@ -167,11 +182,16 @@ def declared_preflight(install: Install, tag: str, params: dict[str, object]
                 outcome = checks.check_stack_inputs(
                     install.data_dir / "pricemodeling.db", int(year))
             elif name == "markup-model-present":
+                # Honour a run overlay: reports_dir follows the config file, not the tree.
+                config = params.get("config")
+                config_path = (Path(str(config)) if config
+                               else install.code_dir(tag) / "dispatch_model" / "config.yaml")
                 outcome = checks.check_markup_model(
-                    install.code_dir(tag) / "dispatch_model" / "reports")
+                    checks.dispatch_reports_dir(config_path))
             elif name == "cmip6-deltas-present":
+                weathergen = install.code_dir(tag) / "weathergen"
                 outcome = checks.check_cmip6_deltas(
-                    install.code_dir(tag) / "weathergen" / "config.yaml")
+                    weathergen / "config.yaml", cwd=weathergen)
             else:  # pragma: no cover - validate_registry forbids reaching this
                 continue
             if not outcome.ok:

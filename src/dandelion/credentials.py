@@ -163,6 +163,25 @@ def status() -> dict[str, bool]:
     return {c.key: all(f.env in stored for f in c.fields) for c in CREDENTIALS}
 
 
+def status_by_field() -> dict[str, bool]:
+    """Which individual FIELDS are stored, keyed by environment variable name.
+
+    Jobs declare `needs_credentials` at field granularity (`RTE_CLIENT_ID`) rather than
+    credential granularity (`rte`), so the engine needs the finer view to enforce it.
+    """
+    stored = stored_environment()
+    return {f.env: f.env in stored for c in CREDENTIALS for f in c.fields}
+
+
+def field_label(env: str) -> str:
+    """A human name for one credential field, for a message a user has to act on."""
+    for credential in CREDENTIALS:
+        for field_ in credential.fields:
+            if field_.env == env:
+                return f"{credential.label} {field_.label.lower()}"
+    return env
+
+
 # --------------------------------------------------------------------------------------
 # testing
 # --------------------------------------------------------------------------------------

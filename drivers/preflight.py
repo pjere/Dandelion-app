@@ -124,7 +124,8 @@ def resolve_trend(config_path: Path, ssp: str | None = None,
 
 def check_cmip6_deltas(config_path: Path, ssp: str | None = None,
                        target_year: int | None = None,
-                       model: str = CMIP6_DEFAULT_MODEL) -> Preflight:
+                       model: str = CMIP6_DEFAULT_MODEL,
+                       cwd: Path | None = None) -> Preflight:
     """Refuse to simulate with the trend on and no deltas to apply.
 
     Passes trivially when the trend is off — that is an honest untrended run, and upstream's
@@ -140,10 +141,17 @@ def check_cmip6_deltas(config_path: Path, ssp: str | None = None,
                          detail=trend)
 
     # An explicit path in the config wins over the derived name (cli.py:100).
+    #
+    # It is resolved differently from every other path in this config. `Config.resolve`
+    # (weathergen/config.py:35) is config-file-relative, and `models_dir` likewise — but an
+    # explicit `cmip6_deltas_path` never passes through either. It goes to trend.fit, which
+    # tests it with a BARE `Path(path).exists()` (trend.py:94), i.e. relative to the
+    # PROCESS's working directory. Resolving it config-relative here would let this check
+    # pass on a file upstream will not find, or refuse one it would.
     if trend["explicit_path"]:
         p = Path(trend["explicit_path"])
         if not p.is_absolute():
-            p = (config_path.parent / p).resolve()
+            p = ((cwd or Path.cwd()) / p).resolve()
         if p.is_file():
             return Preflight(True, check, f"deltas present: {p.name}", detail={**trend, "path": str(p)})
         return Preflight(
@@ -181,8 +189,28 @@ def check_cmip6_deltas(config_path: Path, ssp: str | None = None,
 # and markup.py:285 falls back to clipped SMC when it is absent, silently. Any relocation
 # of reports_dir must therefore seed it - see anchoring.dispatch_reports.
 
+def dispatch_reports_dir(config_path: Path) -> Path:
+    """Where dispatch will look for its reports, resolved the way upstream resolves it.
+
+    `Config.reports_dir` is `(self.path.parent / run.reports_dir).resolve()`
+    (dispatch_model/config.py:74). It is anchored to the CONFIG FILE, not to the code tree
+    — so a run bundle whose overlay lives elsewhere moves reports_dir with it. Hardcoding
+    `<code>/dispatch_model/reports` is right only for the shipped config, and `dispatch-run`
+    takes `-c {config}` precisely so it can be given something else.
+    """
+    config_path = Path(config_path)
+    raw = _load_yaml(config_path) if config_path.is_file() else {}
+    rel = (raw.get("run") or {}).get("reports_dir", "reports")
+    p = Path(rel)
+    return p if p.is_absolute() else (config_path.parent / p).resolve()
+
+
 def check_markup_model(reports_dir: Path) -> Preflight:
-    """Refuse to project when the fitted markup wedge is not where dispatch will look."""
+    """Refuse to project when the fitted markup wedge is not where dispatch will look.
+
+    Takes the RESOLVED directory; callers with a config in hand should get it from
+    `dispatch_reports_dir` so an overlay is honoured.
+    """
     check = "markup-model-present"
     path = Path(reports_dir) / "markup_model.json"
     if path.is_file():

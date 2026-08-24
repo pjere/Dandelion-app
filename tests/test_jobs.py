@@ -188,3 +188,41 @@ def test_parameters_reach_a_runner_through_the_environment(install, monkeypatch)
     engine = jobs.JobEngine(install, "v0.1.0")
     engine.run("backfill-entsoe-extras", {"year": 2019}, preflight=lambda _: None)
     assert captured.get("DANDELION_YEAR") == "2019"
+
+
+# ------------------------------------------------------------------- credentials
+
+def test_a_job_without_its_credentials_is_refused(install, monkeypatch):
+    """`needs_credentials` was declared on nine jobs and read in exactly two places, both
+    of which only PRINT it. The job started anyway — and upstream's answer to a missing
+    token is not reliably an error: `_do` records an empty ENTSO-E payload as status='ok',
+    so the run could report success having written nothing."""
+    import dandelion.jobs as jobs
+
+    monkeypatch.setattr(jobs.credentials, "status_by_field", lambda: {})
+    engine = jobs.JobEngine(install, "v0.1.0")
+    result = engine.run("backfill-entsoe", {"years": 2019})
+    assert result.outcome == "refused"
+    assert "ENTSO-E" in result.reason
+    assert "no data has changed" in result.reason
+
+
+def test_a_job_with_its_credentials_is_not_blocked_by_that_check(install, monkeypatch):
+    import dandelion.jobs as jobs
+
+    monkeypatch.setattr(jobs.credentials, "status_by_field",
+                        lambda: {"ENTSOE_TOKEN": True})
+    check = jobs.declared_preflight(install, "v0.1.0", {"years": 2019})
+    assert check("backfill-entsoe") is None
+
+
+def test_partial_credentials_name_only_what_is_missing(install, monkeypatch):
+    """RTE needs two fields. Having the id and not the secret must say so."""
+    import dandelion.jobs as jobs
+
+    monkeypatch.setattr(jobs.credentials, "status_by_field",
+                        lambda: {"RTE_CLIENT_ID": True})
+    check = jobs.declared_preflight(install, "v0.1.0", {})
+    reason = check("extract-rte")
+    assert reason and "secret" in reason.lower()
+    assert "client id" not in reason.lower()

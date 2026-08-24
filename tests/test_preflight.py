@@ -89,15 +89,48 @@ def test_simulate_time_overrides_change_which_file_is_required(tmp_path):
     assert preflight.check_cmip6_deltas(cfg, ssp="ssp585", target_year=2040).ok
 
 
-def test_explicit_config_path_wins_and_is_config_anchored(tmp_path):
+def test_an_explicit_deltas_path_is_cwd_anchored_not_config_anchored(tmp_path):
+    """The odd one out, and this test used to assert the wrong thing.
+
+    Every other path in a weathergen config is resolved relative to the config FILE —
+    `Config.resolve` (config.py:35) and `models_dir` (config.py:43) both do. An explicit
+    `trend.cmip6_deltas_path` passes through NEITHER: cli.py hands it straight to trend.fit,
+    which tests it with a bare `Path(path).exists()` (trend.py:94) — relative to the
+    process's working directory. Anchoring it to the config here would pass on a file
+    upstream cannot find."""
     payload = {**TREND_ON, "trend": {**TREND_ON["trend"], "cmip6_deltas_path": "custom/d.npz"}}
     cfg = _config(tmp_path, payload)
-    r = preflight.check_cmip6_deltas(cfg)
-    assert not r.ok and "does not exist" in r.reason
-    target = tmp_path / "custom" / "d.npz"
-    target.parent.mkdir()
-    target.write_bytes(b"x")
-    assert preflight.check_cmip6_deltas(cfg).ok
+    elsewhere = tmp_path / "run"
+    elsewhere.mkdir()
+
+    # Sitting next to the CONFIG is not enough — upstream would not look there.
+    beside_config = tmp_path / "custom" / "d.npz"
+    beside_config.parent.mkdir()
+    beside_config.write_bytes(b"x")
+    assert not preflight.check_cmip6_deltas(cfg, cwd=elsewhere).ok
+
+    # Sitting under the working directory is what counts.
+    (elsewhere / "custom").mkdir()
+    (elsewhere / "custom" / "d.npz").write_bytes(b"x")
+    assert preflight.check_cmip6_deltas(cfg, cwd=elsewhere).ok
+
+
+def test_a_run_overlay_moves_the_dispatch_reports_directory(tmp_path):
+    """`Config.reports_dir` is `(config.parent / run.reports_dir)` (dispatch_model
+    config.py:74), so a run bundle's overlay moves it. Hardcoding <code>/dispatch_model
+    /reports is right only for the shipped config, and `dispatch-run` takes -c precisely
+    so it can be given another."""
+    import yaml
+
+    overlay = tmp_path / "runs" / "r1" / "config.yaml"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text(yaml.safe_dump({"run": {"reports_dir": "reports"}}), encoding="utf-8")
+    assert preflight.dispatch_reports_dir(overlay) == (overlay.parent / "reports").resolve()
+
+    absolute = tmp_path / "shared"
+    overlay.write_text(yaml.safe_dump({"run": {"reports_dir": str(absolute)}}),
+                       encoding="utf-8")
+    assert preflight.dispatch_reports_dir(overlay) == absolute
 
 
 def test_models_dir_is_anchored_to_the_config_file_not_the_cwd(tmp_path):
