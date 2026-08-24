@@ -136,24 +136,59 @@ suites were skipped.
 
 ### Publish
 
-**Decision D3, 2026-08-20: a public releases-only repository.** `pjere/Dandelion` stays
-private; a separate public repo — `pjere/dandelion-releases` — carries nothing but release
-assets. The installer runs on strangers' machines and can therefore hold no credential: any
-token baked into a distributed binary is a published token. Anonymous fetch is the only
-workable shape.
+**Decision D3: assets are published on `pjere/Dandelion-app`, which is public.** The installer
+runs on machines we do not control and can therefore carry no credential — any token baked into
+a distributed binary is a published token — so anonymous fetch is the only workable shape. The
+research repository stays private; the archive is exactly what a user installs and runs anyway.
 
-Create it once (public, empty, no code), then per release create a GitHub release tagged
-`v0.1.0` there and upload:
+### Once: the GitHub CLI
 
-| asset | from |
+```bash
+winget install --id GitHub.cli -e
+```
+
+Open a new terminal so it lands on PATH, then:
+
+```bash
+gh auth login
+```
+
+### Publish
+
+**Runs in: `Dandelion-app\`.** The installer builds its URLs as
+`releases/download/<tag>/<file>`, so the release tag must match the model tag exactly.
+
+```bash
+gh release create v0.1.0 --repo pjere/Dandelion-app --title "Dandelion model v0.1.0" --notes "Code archive, dependency lock and fitted models for Dandelion Studio."
+```
+
+Then attach the files. **In PowerShell**, so the chunk names expand without listing them:
+
+```bash
+gh release upload v0.1.0 --repo pjere/Dandelion-app (Get-ChildItem dist0.1.0\dandelion-code-v0.1.0.zip, dist0.1.0\constraints.lock, dist0.1.0\code_manifest.json, distits-v0.1.0\* | ForEach-Object FullName)
+```
+
+The installer needs exactly these names, so do not rename them:
+
+| asset | read by |
 |---|---|
-| `dandelion-code-v0.1.0.zip` | `dist/v0.1.0/` |
-| `constraints.lock` | `dist/v0.1.0/` |
-| `code_manifest.json` | `dist/v0.1.0/` |
-| `fits.NNN.tar.zst` + `fits_manifest.json` | the fits cycle below |
+| `dandelion-code-<tag>.zip` | `provision.fetch_release` |
+| `constraints.lock` | `provision.install_dependencies` |
+| `code_manifest.json` | verifies the archive checksum before extracting |
+| `fits_manifest.json` | `fits.fetch_plan` — sizes shown before the user commits |
+| `fits.NNN.tar.zst` | `fits.download_fits`, checksum-verified per chunk |
 
-Nothing private leaks: the archive is exactly what a user installs and runs anyway. What stays
-private is the repository's history, issues and unreleased work.
+### Check it from outside
+
+The installer authenticates with nothing, so verify the same way:
+
+```bash
+curl -sIL -o NUL -w "%{http_code}
+" https://github.com/pjere/Dandelion-app/releases/download/v0.1.0/code_manifest.json
+```
+
+`200` means an installer on a stranger's machine can fetch it. `404` means the release is
+private, the tag differs, or a file was renamed.
 
 ---
 
@@ -172,7 +207,8 @@ generator's array sidecar.
 **Runs in: `Dandelion-app\`**
 
 ```bash
-"%USERPROFILE%\dandelion-tools\Scripts\python" release_toolselease_fits.py --source <your-Dandelion-checkout> --tag v0.1.0 --python <release-venv>\Scripts\python.exe --dry-run
+"%USERPROFILE%\dandelion-tools\Scripts\python" release_tools
+elease_fits.py --source <your-Dandelion-checkout> --tag v0.1.0 --python <release-venv>\Scripts\python.exe --dry-run
 ```
 
 Drop `--dry-run` to package. Two things it insists on:
