@@ -14,12 +14,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from nicegui import app, ui  # noqa: E402
 
-from dandelion import branding  # noqa: E402
+from dandelion import branding, credentials  # noqa: E402
+from dandelion.background import BackgroundTask, TaskView  # noqa: E402
+from dandelion.credentials import CREDENTIALS  # noqa: E402
 from dandelion.paths import Install, check_data_location, default_install  # noqa: E402
 from dandelion.ui import choose_window_mode, free_port  # noqa: E402
 from dandelion.wizard_state import WizardState  # noqa: E402
 
 STATE_FILE = "wizard_state.json"
+
+#: The release this build of the installer knows how to fetch. Pinned rather than "latest":
+#: an installer and a code release are qualified together, and silently picking up a newer
+#: tag would install a combination nobody tested.
+DEFAULT_TAG = "v0.1.0"
 
 PAGES = ("welcome", "locations", "runtime", "credentials", "models", "data", "finish")
 PAGE_TITLES = {
@@ -40,6 +47,9 @@ class Wizard:
         self.state = WizardState.load(self.state_path)
         self.current = self.state.next_step
         self.body: ui.column | None = None
+        self.task: BackgroundTask | None = None
+        self.view = TaskView()
+        self.cred_tasks: dict[str, BackgroundTask] = {}
 
     # ------------------------------------------------------------------ plumbing
     def persist(self) -> None:
@@ -177,12 +187,237 @@ class Wizard:
                 PAGES[max(0, PAGES.index(self.current) - 1)])).props("flat")
 
     def page_runtime(self) -> None:
-        self._placeholder("Install the model",
-                          "Downloads the model code and builds its Python environment.")
+        ui.label("Install the model").classes("text-h5 q-mb-sm")
+        ui.markdown(
+            f"This downloads model release **{DEFAULT_TAG}**, installs a private copy of "
+            "Python, and builds the environment the model runs in. Nothing already on your "
+            "machine is changed, and nothing needs administrator rights."
+        ).classes("q-mb-sm")
+        ui.markdown(
+            "It takes **about eight minutes** and downloads roughly 1 GB. You can leave it."
+        ).classes("text-body2 text-grey-7 q-mb-md")
+
+        if self.state.runtime_ready and self.task is None:
+            with ui.card().classes("w-full bg-green-1 q-mb-md"):
+                with ui.row().classes("items-center"):
+                    ui.icon("check_circle").classes("text-positive text-h5")
+                    label = f"{self.state.code_tag} is installed and verified."
+                    ui.label(label).classes("text-body1")
+            with ui.row():
+                ui.button("Continue", on_click=self.advance).props("color=primary")
+                ui.button("Reinstall", on_click=self._start_provision).props("flat")
+                ui.button("Back", on_click=lambda: self.go("locations")).props("flat")
+            return
+
+        progress_area = ui.column().classes("w-full q-mb-md")
+        buttons = ui.row().classes("q-mt-md")
+
+        def paint() -> None:
+            progress_area.clear()
+            with progress_area:
+                if self.view.current and not self.view.done:
+                    with ui.row().classes("items-center w-full"):
+                        ui.spinner(size="sm")
+                        ui.label(self.view.current).classes("text-body2")
+                    if self.view.fraction is not None:
+                        ui.linear_progress(value=self.view.fraction).classes("w-full")
+                    else:
+                        # No honest percentage exists for this step, so none is shown.
+                        ui.linear_progress().props("indeterminate").classes("w-full")
+                for done in self.view.steps[-14:]:
+                    ok = done.ok is not False
+                    with ui.row().classes("items-center no-wrap"):
+                        icon = "check_circle" if ok else "error"
+                        colour = "text-positive" if ok else "text-negative"
+                        ui.icon(icon).classes(colour)
+                        ui.label(done.message).classes("text-body2")
+                if self.view.error:
+                    with ui.card().classes("w-full bg-red-1"):
+                        ui.label("Installation stopped").classes("text-subtitle2 text-negative")
+                        ui.label(self.view.error).classes("text-body2 whitespace-pre-wrap")
+
+            buttons.clear()
+            with buttons:
+                if self.task is not None and self.task.running:
+                    ui.label("Working...").classes("text-grey-7")
+                elif self.view.error:
+                    ui.button("Try again", on_click=self._start_provision).props("color=primary")
+                    ui.button("Back", on_click=lambda: self.go("locations")).props("flat")
+                elif self.state.runtime_ready:
+                    ui.button("Continue", on_click=self.advance).props("color=primary")
+                else:
+                    ui.button("Install now", on_click=self._start_provision).props("color=primary")
+                    ui.button("Back", on_click=lambda: self.go("locations")).props("flat")
+
+        def poll() -> None:
+            if self.task is None:
+                return
+            if self.view.apply_all(self.task.drain()):
+                if self.task.finished and self.task.succeeded and not self.state.runtime_ready:
+                    self.state.runtime_ready = True
+                    self.state.code_tag = DEFAULT_TAG
+                    self.persist()
+                paint()
+
+        ui.timer(0.3, poll)
+        paint()
+
+    def _configured_install(self) -> Install:
+        return Install(app_root=self.install.app_root,
+                       data_root=Path(self.state.data_root or self.install.data_root))
+
+    def _start_provision(self) -> None:
+        from dandelion.provision import provision
+
+        self.view = TaskView()
+        task = BackgroundTask("Installation")
+        self.task = task
+        install = self._configured_install()
+
+        def work():
+            return provision(
+                install, DEFAULT_TAG,
+                listener=lambda step: task.step(step.title, step.detail or "", step.ok),
+                on_download=lambda pr: task.progress(f"Downloading {pr.name}", pr.fraction),
+            )
+
+        task.start(work)
+        self.render()
 
     def page_credentials(self) -> None:
-        self._placeholder("Your data accounts",
-                          "RTE, ENTSO-E and Copernicus, each with a **Test** button.")
+        ui.label("Your data accounts").classes("text-h5 q-mb-sm")
+        ui.markdown(
+            "Dandelion Studio ships no market data. It downloads what it needs using **your** "
+            "accounts, so the data arrives under your own terms of use with each provider."
+        ).classes("q-mb-sm")
+        ui.markdown(
+            "Credentials are stored in **Windows Credential Manager**, never in a file, and "
+            "are sent only to the provider they belong to."
+        ).classes("text-body2 text-grey-7 q-mb-md")
+
+        if not self.state.runtime_ready:
+            with ui.card().classes("w-full bg-amber-1 q-mb-md"):
+                ui.label("You can enter credentials now, but testing them needs the model "
+                         "installed first - the checks run inside it.").classes("text-body2")
+
+        for credential in CREDENTIALS:
+            self._credential_card(credential)
+
+        def carry_on() -> None:
+            for cred in CREDENTIALS:
+                self.state.credentials.setdefault(cred.key, "untested")
+            self.persist()
+            self.advance()
+
+        with ui.row().classes("q-mt-md"):
+            ui.button("Continue", on_click=carry_on).props("color=primary")
+            ui.button("Back", on_click=lambda: self.go("runtime")).props("flat")
+
+    def _credential_card(self, credential) -> None:
+        state = self.state.credential_state(credential.key)
+        stored = credentials.status().get(credential.key, False)
+
+        with ui.card().classes("w-full q-mb-md"):
+            with ui.row().classes("items-center w-full justify-between"):
+                with ui.row().classes("items-center"):
+                    icon, colour = {
+                        "passed": ("check_circle", "text-positive"),
+                        "failed": ("error", "text-negative"),
+                        "skipped": ("remove_circle_outline", "text-grey"),
+                    }.get(state, ("radio_button_unchecked", "text-grey-5"))
+                    ui.icon(icon).classes(f"{colour} text-h6")
+                    ui.label(credential.label).classes("text-subtitle1")
+                ui.label("stored" if stored else "not stored").classes("text-caption text-grey")
+
+            ui.label(credential.why).classes("text-body2 text-grey-8")
+            ui.label(credential.without).classes("text-caption text-grey-7 q-mb-sm")
+
+            with ui.expansion("How to get one").classes("w-full"):
+                for index, step in enumerate(credential.steps, 1):
+                    ui.label(f"{index}. {step}").classes("text-body2 q-mb-xs")
+                ui.link(credential.signup_url, credential.signup_url, new_tab=True)
+
+            boxes: dict[str, object] = {}
+            for field_ in credential.fields:
+                existing = credentials.load(field_.env) or field_.default
+                boxes[field_.env] = ui.input(
+                    field_.label, value=existing,
+                    password=field_.secret,
+                    password_toggle_button=field_.secret,
+                ).classes("w-full")
+
+            result_area = ui.column().classes("w-full")
+
+            def save_values(_boxes=boxes) -> dict:
+                values = {env: (box.value or "").strip() for env, box in _boxes.items()}
+                for env, value in values.items():
+                    if value:
+                        credentials.save(env, value)
+                return values
+
+            def run_test(cred=credential, area=result_area, saver=save_values) -> None:
+                values = saver()
+                if not self.state.runtime_ready:
+                    ui.notify("Install the model first - the check runs inside it.",
+                              type="warning")
+                    return
+
+                install = self._configured_install()
+                tag = self.state.code_tag or DEFAULT_TAG
+                task = BackgroundTask(f"Testing {cred.label}")
+                self.cred_tasks[cred.key] = task
+
+                area.clear()
+                with area, ui.row().classes("items-center"):
+                    ui.spinner(size="sm")
+                    ui.label(f"Asking {cred.label}...").classes("text-body2")
+
+                task.start(credentials.test_credential, cred.key,
+                           install.python(tag), install.code_dir(tag), values)
+
+                def check() -> None:
+                    if not task.finished:
+                        return
+                    timer.deactivate()
+                    outcome = task.result if task.succeeded else None
+                    area.clear()
+                    with area:
+                        if outcome is None:
+                            ui.label("The check could not run.").classes("text-negative")
+                            ui.label(str(task.error)).classes("text-caption")
+                            self.state.credentials[cred.key] = "failed"
+                        else:
+                            colour = "text-positive" if outcome.ok else "text-negative"
+                            with ui.row().classes("items-center"):
+                                ui.icon("check_circle" if outcome.ok else "error").classes(colour)
+                                ui.label(outcome.summary).classes("text-body2")
+                            for line in outcome.verified:
+                                ui.label(f"OK - {line}").classes("text-caption text-positive")
+                            # What was NOT proven matters more than the tick: the Copernicus
+                            # check reaches the service but cannot validate the key itself.
+                            for line in outcome.unverified:
+                                ui.label(f"not checked - {line}").classes("text-caption text-grey-7")
+                            if outcome.detail and not outcome.ok:
+                                ui.label(outcome.detail).classes("text-caption text-grey-7")
+                            self.state.credentials[cred.key] = (
+                                "passed" if outcome.ok else "failed")
+                    self.persist()
+
+                timer = ui.timer(0.3, check)
+
+            def skip(cred=credential) -> None:
+                self.state.credentials[cred.key] = "skipped"
+                self.persist()
+                ui.notify(f"{cred.label} skipped. {cred.without}", type="info")
+
+            def just_save(saver=save_values) -> None:
+                saver()
+                ui.notify("Saved to Windows Credential Manager.", type="positive")
+
+            with ui.row().classes("q-mt-sm"):
+                ui.button("Save and test", on_click=run_test).props("color=primary outline")
+                ui.button("Save", on_click=just_save).props("flat")
+                ui.button("Skip for now", on_click=skip).props("flat")
 
     def page_models(self) -> None:
         self._placeholder("Fitted models",
@@ -199,7 +434,8 @@ class Wizard:
 
 
 def run(install: Install | None = None, *, force_mode: str | None = None,
-        headless_check: bool = False) -> int:
+        headless_check: bool = False, show: bool | None = None,
+        port: int | None = None) -> int:
     """Open the wizard. `headless_check` builds the page and exits, for packaging tests."""
     install = install or default_install()
     install.app_root.mkdir(parents=True, exist_ok=True)
@@ -219,8 +455,8 @@ def run(install: Install | None = None, *, force_mode: str | None = None,
     ui.run(
         native=mode.native,
         reload=False,
-        show=not mode.native,
-        port=free_port(),
+        show=(not mode.native) if show is None else show,
+        port=port or free_port(),
         title=f"{branding.PRODUCT_NAME} — Setup",
         window_size=(1040, 780) if mode.native else None,
         favicon="🌱",
