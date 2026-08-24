@@ -126,7 +126,9 @@ def test_missing_installed_capacity_is_refused_not_warned(tmp_path):
     No shipped entry point fills the table, so the degraded state is the DEFAULT one."""
     path = tmp_path / "m.db"
     con = sqlite3.connect(path)
-    con.execute("CREATE TABLE ingest_log (source TEXT)")
+    con.execute("CREATE TABLE dim_production_unit (eic_code TEXT, fuel_type TEXT)")
+    con.executemany("INSERT INTO dim_production_unit VALUES (?, ?)",
+                    [(f"EIC{i}", "NUCLEAR") for i in range(50)])
     con.commit()
     con.close()
     result = check_stack_inputs(path, 2019)
@@ -140,6 +142,9 @@ def test_an_empty_capacity_table_counts_as_missing(tmp_path):
     path = tmp_path / "m.db"
     con = sqlite3.connect(path)
     con.execute("CREATE TABLE entsoe_installed_capacity (series_key TEXT, value REAL)")
+    con.execute("CREATE TABLE dim_production_unit (eic_code TEXT, fuel_type TEXT)")
+    con.executemany("INSERT INTO dim_production_unit VALUES (?, ?)",
+                    [(f"EIC{i}", "NUCLEAR") for i in range(50)])
     con.commit()
     con.close()
     assert not check_stack_inputs(path, 2019).ok
@@ -151,7 +156,42 @@ def test_capacity_for_real_zones_passes(tmp_path):
     con.execute("CREATE TABLE entsoe_installed_capacity (series_key TEXT, value REAL)")
     con.executemany("INSERT INTO entsoe_installed_capacity VALUES (?, ?)",
                     [(z, 1000.0) for z in ("FR", "DE_LU", "BE", "CH", "ES", "GB", "IT_NORTH")])
+    con.execute("CREATE TABLE dim_production_unit (eic_code TEXT, fuel_type TEXT)")
+    con.executemany("INSERT INTO dim_production_unit VALUES (?, ?)",
+                    [(f"EIC{i}", "NUCLEAR") for i in range(50)])
     con.commit()
     con.close()
     result = check_stack_inputs(path, 2019)
     assert result.ok and result.detail["zones"] == 7
+
+
+def test_an_empty_unit_registry_is_refused(tmp_path):
+    """io/fr_fleet.py:102 keeps only rows with a known fuel_type, so an empty
+    dim_production_unit yields an EMPTY French fleet and a backtest with no power stations
+    to dispatch. Nothing raises — the prices are just nonsense."""
+    path = tmp_path / "m.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE entsoe_installed_capacity (series_key TEXT, value REAL)")
+    con.execute("INSERT INTO entsoe_installed_capacity VALUES ('FR', 1000.0)")
+    con.execute("CREATE TABLE dim_production_unit (eic_code TEXT, fuel_type TEXT)")
+    con.commit()
+    con.close()
+    result = check_stack_inputs(path, 2019)
+    assert not result.ok
+    assert result.remedy_job == "reconcile-units"
+    assert "no account" in result.reason, "this remedy needs no credentials — say so"
+
+
+def test_a_complete_install_passes(tmp_path):
+    path = tmp_path / "m.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE entsoe_installed_capacity (series_key TEXT, value REAL)")
+    con.executemany("INSERT INTO entsoe_installed_capacity VALUES (?, ?)",
+                    [(z, 1.0) for z in ("FR", "BE", "CH")])
+    con.execute("CREATE TABLE dim_production_unit (eic_code TEXT, fuel_type TEXT)")
+    con.executemany("INSERT INTO dim_production_unit VALUES (?, ?)",
+                    [(f"EIC{i}", "NUCLEAR") for i in range(50)])
+    con.commit()
+    con.close()
+    result = check_stack_inputs(path, 2019)
+    assert result.ok and result.detail == {"zones": 3, "units": 50}

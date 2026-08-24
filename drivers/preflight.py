@@ -324,10 +324,27 @@ def check_stack_inputs(database: Path, year: int) -> Preflight:
                 zones = connection.execute(
                     "SELECT COUNT(DISTINCT series_key) FROM entsoe_installed_capacity"
                 ).fetchone()[0]
+            units = 0
+            if "dim_production_unit" in present:
+                units = connection.execute(
+                    "SELECT COUNT(*) FROM dim_production_unit").fetchone()[0]
         connection.close()
     except sqlite3.DatabaseError as exc:
         return Preflight(False, check, f"The database could not be read: {exc}")
 
+    # dim_production_unit maps each EIC code to a fuel type. io/fr_fleet.py:102 reads it and
+    # then keeps only rows whose fuel_type is known, so an EMPTY registry yields an empty
+    # French fleet — build_fr_stack then iterates over nothing and the backtest runs with no
+    # French dispatchable units at all. Nothing raises; the prices are simply nonsense.
+    if not units:
+        return Preflight(
+            False, check,
+            "The production-unit registry is empty, so the model has no French power "
+            "stations to dispatch. Reconciling units fills it from the data already "
+            "downloaded - it needs no account and takes a moment.",
+            remedy_job="reconcile-units",
+            detail={"units": units, "zones": zones},
+        )
     if not zones:
         return Preflight(
             False, check,
@@ -338,8 +355,9 @@ def check_stack_inputs(database: Path, year: int) -> Preflight:
             remedy_job="backfill-entsoe-extras", remedy_args={"year": year},
             detail={"zones": zones},
         )
-    return Preflight(True, check, f"installed capacity present for {zones} zones",
-                     detail={"zones": zones})
+    return Preflight(True, check,
+                     f"installed capacity for {zones} zones, {units:,} units in the registry",
+                     detail={"zones": zones, "units": units})
 
 
 def run_all(config_paths: dict[str, Path]) -> list[Preflight]:
