@@ -152,6 +152,46 @@ ENTSOE_EXTRAS_RUNNER = (
     "print('DONE', flush=True)"
 )
 
+# The thirteen cluster zones, which nothing ships a path to either.
+#
+# `series.ZONES` is the eight-zone dispatch footprint. `ALL_ZONES` adds DE_REST_ZONES
+# (NL, AT, DK_1, DK_2, PL, CZ, SI) and IT_SOUTH_ZONES (the six southern Italian bidding
+# zones). Every ingest function takes `zones=None` and defaults to the EIGHT, and
+# `scripts/backfill_entsoe.py` passes no zones argument at all — so a user following the
+# shipped path gets the eight and nothing tells them the rest exist.
+#
+# dispatch_model needs them: `neighbours/blocks.py:114` folds them into four virtual
+# price-responsive clusters, and :73/:228/:232 read their demand, generation and installed
+# capacity. Upstream states the cost of their absence twice —
+#
+#   "The 7-zone model gave DE-LU only ~8 GW of export headroom (FR 3 + BE 1 + CH 4), but
+#    the observed negative hours imply ~14.5 GW; the gap is DE's NL/AT/DK/PL/CZ borders,
+#    absent from the zone set."                                  (series.py:88)
+#   "IT-North is not an island: it exports to the south, so modelling only IT-North's own
+#    load under-prices it (#142)."                               (series.py:108)
+#
+# Measured here on the 2019 backtest with the eight-zone set: DE_LU came out at 22.1 EUR/MWh
+# against 37.7 observed (-41.3%) with 466 negative hours against 210 — the documented
+# failure, exactly. The owner's own database carries all twenty-one zones.
+ENTSOE_CLUSTERS_RUNNER = (
+    "import os;"
+    "from datetime import date;"
+    "from pricemodeling.db import get_engine;"
+    "from pricemodeling.entsoe import series as S;"
+    "eng=get_engine('sqlite:///data/pricemodeling.db');"
+    "cl=S._client(os.environ['ENTSOE_TOKEN']);"
+    "y=int(os.environ['DANDELION_YEAR']);"
+    "s=date(y,1,1);e=date(y,12,31);"
+    "Z=S.ALL_ZONES;"
+    "print('=== %d, %d zones ===' % (y, len(Z)), flush=True);"
+    "print('  load     : %s' % S.ingest_load(eng,cl,s,e,zones=Z), flush=True);"
+    "print('  gen      : %s' % S.ingest_generation(eng,cl,s,e,zones=Z), flush=True);"
+    "print('  prices   : %s' % S.ingest_prices(eng,cl,s,e,zones=Z), flush=True);"
+    "print('  capacity : %s' % S.ingest_installed_capacity(eng,cl,s,e,zones=Z), flush=True);"
+    "print('  hydro    : %s' % S.ingest_hydro_storage(eng,cl,s,e,zones=Z), flush=True);"
+    "print('DONE', flush=True)"
+)
+
 
 ERREUR = (r"^\[ERREUR\]",)
 
@@ -316,6 +356,25 @@ JOBS: tuple[Job, ...] = (
         argv=("{python}", "-m", "pricemodeling", "reconcile-units"),
         produces=("data/reconciliation_report.csv",),
         upstream_ref="pricemodeling/pipeline.py:179",
+    ),
+    Job(
+        id="backfill-entsoe-clusters",
+        title="ENTSO-E data for the thirteen cluster zones",
+        kind=Kind.MODULE, stage=Stage.DATA,
+        argv=("{python}", "-X", "utf8", "-c", ENTSOE_CLUSTERS_RUNNER),
+        cwd=".",
+        needs_credentials=("ENTSOE_TOKEN",),
+        resumable=True,
+        notes=(
+            "Every ingest function defaults to the EIGHT dispatch zones and "
+            "scripts/backfill_entsoe.py passes no zones argument, so the thirteen cluster "
+            "zones have no shipped path. dispatch_model folds them into four virtual "
+            "price-responsive clusters and reads their demand, generation and installed "
+            "capacity. See ENTSOE_CLUSTERS_RUNNER for the measured cost of skipping them: "
+            "DE_LU prices 41% low. Idempotent via ingest_log, so it resumes and re-running "
+            "it after backfill-entsoe costs nothing for the eight already done."
+        ),
+        upstream_ref="pricemodeling/entsoe/series.py:39 (ALL_ZONES)",
     ),
     Job(
         id="backfill-entsoe-extras",

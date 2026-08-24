@@ -203,3 +203,17 @@ def test_every_declared_preflight_is_implemented(j):
 def test_unknown_job_lookup_is_loud():
     with pytest.raises(KeyError):
         job("no-such-job")
+
+
+def test_the_cluster_job_covers_every_zone_the_eight_zone_backfill_misses():
+    """`backfill-entsoe` passes no zones argument, so it ingests series.ZONES — eight. The
+    dispatch model reads thirteen more through its four virtual clusters, and nothing
+    shipped fetches them. Measured cost on the 2019 backtest: DE_LU 41% low with 466
+    negative hours against 210 observed."""
+    from drivers.inventory import ENTSOE_CLUSTERS_RUNNER
+
+    assert "ALL_ZONES" in ENTSOE_CLUSTERS_RUNNER
+    for call in ("ingest_load", "ingest_generation", "ingest_installed_capacity"):
+        assert f"S.{call}(eng,cl,s,e,zones=Z)" in ENTSOE_CLUSTERS_RUNNER, call
+    assert job("backfill-entsoe-clusters").needs_credentials == ("ENTSOE_TOKEN",)
+    assert job("backfill-entsoe-clusters").resumable
