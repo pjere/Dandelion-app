@@ -361,6 +361,7 @@ def check_stack_inputs(database: Path, year: int) -> Preflight:
             if "dim_production_unit" in present:
                 units = connection.execute(
                     "SELECT COUNT(*) FROM dim_production_unit").fetchone()[0]
+            remit = "entsoe_unavailability" in present
         connection.close()
     except sqlite3.DatabaseError as exc:
         return Preflight(False, check, f"The database could not be read: {exc}")
@@ -388,9 +389,25 @@ def check_stack_inputs(database: Path, year: int) -> Preflight:
             remedy_job="backfill-entsoe-extras", remedy_args={"year": year},
             detail={"zones": zones},
         )
+    # Unlike the two above this one CRASHES rather than degrading: backtest.py:349 calls
+    # nuclear_unavailable_mw unconditionally whenever flexibility is on, which is the
+    # default, and unavailability.py:169 queries entsoe_unavailability with no guard. A
+    # loud failure is better than a quiet one, but it arrives roughly two minutes in, after
+    # the year has been preloaded and every neighbour stack built. Catching it up front
+    # costs nothing.
+    if not remit:
+        return Preflight(
+            False, check,
+            "Power-station outage notifications have not been downloaded. The model uses "
+            "them for the true French nuclear availability, and without them a backtest "
+            "stops partway through rather than finishing.",
+            remedy_job="ingest-remit",
+            remedy_args={"start": f"{year}-01-01", "end": f"{year + 1}-01-01"},
+            detail={"zones": zones, "units": units, "remit": remit},
+        )
     return Preflight(True, check,
                      f"installed capacity for {zones} zones, {units:,} units in the registry",
-                     detail={"zones": zones, "units": units})
+                     detail={"zones": zones, "units": units, "remit": remit})
 
 
 def run_all(config_paths: dict[str, Path]) -> list[Preflight]:

@@ -241,6 +241,7 @@ JOBS: tuple[Job, ...] = (
         id="ingest-remit", title="REMIT outage notifications",
         kind=Kind.MODULE, stage=Stage.DATA,
         argv=("{python}", "-m", "pricemodeling", "ingest-remit"),
+        optional_argv=(("--start", "{start}"), ("--end", "{end}"), ("--zones", "{zones}")),
         needs_credentials=("ENTSOE_TOKEN",),
         failure_markers=ERREUR,
         resumable=True,

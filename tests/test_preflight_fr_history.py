@@ -133,6 +133,7 @@ def test_missing_installed_capacity_is_refused_not_warned(tmp_path):
     con.execute("CREATE TABLE dim_production_unit (eic_code TEXT, fuel_type TEXT)")
     con.executemany("INSERT INTO dim_production_unit VALUES (?, ?)",
                     [(f"EIC{i}", "NUCLEAR") for i in range(50)])
+    con.execute("CREATE TABLE entsoe_unavailability (zone TEXT)")
     con.commit()
     con.close()
     result = check_stack_inputs(path, 2019)
@@ -149,6 +150,7 @@ def test_an_empty_capacity_table_counts_as_missing(tmp_path):
     con.execute("CREATE TABLE dim_production_unit (eic_code TEXT, fuel_type TEXT)")
     con.executemany("INSERT INTO dim_production_unit VALUES (?, ?)",
                     [(f"EIC{i}", "NUCLEAR") for i in range(50)])
+    con.execute("CREATE TABLE entsoe_unavailability (zone TEXT)")
     con.commit()
     con.close()
     assert not check_stack_inputs(path, 2019).ok
@@ -163,6 +165,7 @@ def test_capacity_for_real_zones_passes(tmp_path):
     con.execute("CREATE TABLE dim_production_unit (eic_code TEXT, fuel_type TEXT)")
     con.executemany("INSERT INTO dim_production_unit VALUES (?, ?)",
                     [(f"EIC{i}", "NUCLEAR") for i in range(50)])
+    con.execute("CREATE TABLE entsoe_unavailability (zone TEXT)")
     con.commit()
     con.close()
     result = check_stack_inputs(path, 2019)
@@ -195,10 +198,12 @@ def test_a_complete_install_passes(tmp_path):
     con.execute("CREATE TABLE dim_production_unit (eic_code TEXT, fuel_type TEXT)")
     con.executemany("INSERT INTO dim_production_unit VALUES (?, ?)",
                     [(f"EIC{i}", "NUCLEAR") for i in range(50)])
+    con.execute("CREATE TABLE entsoe_unavailability (zone TEXT)")
     con.commit()
     con.close()
     result = check_stack_inputs(path, 2019)
-    assert result.ok and result.detail == {"zones": 3, "units": 50}
+    assert result.ok
+    assert result.detail == {"zones": 3, "units": 50, "remit": True}
 
 
 def test_a_master_missing_generation_columns_is_refused(tmp_path):
@@ -234,3 +239,23 @@ def test_a_complete_column_set_passes(tmp_path):
     con.commit()
     con.close()
     assert check_fr_history(path, 2019).ok
+
+
+def test_missing_remit_is_caught_before_the_run_not_two_minutes_in(tmp_path):
+    """backtest.py:349 calls nuclear_unavailable_mw unconditionally when flexibility is on
+    (the default), and unavailability.py:169 queries entsoe_unavailability with no guard.
+    Measured: the run crashed after 1m 53s, having preloaded the year and built every
+    neighbour stack first."""
+    path = tmp_path / "m.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE entsoe_installed_capacity (series_key TEXT, value REAL)")
+    con.execute("INSERT INTO entsoe_installed_capacity VALUES ('FR', 1.0)")
+    con.execute("CREATE TABLE dim_production_unit (eic_code TEXT, fuel_type TEXT)")
+    con.executemany("INSERT INTO dim_production_unit VALUES (?, ?)",
+                    [(f"EIC{i}", "NUCLEAR") for i in range(50)])
+    con.commit()
+    con.close()
+    result = check_stack_inputs(path, 2019)
+    assert not result.ok
+    assert result.remedy_job == "ingest-remit"
+    assert result.remedy_args == {"start": "2019-01-01", "end": "2020-01-01"}
