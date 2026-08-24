@@ -131,6 +131,40 @@ def render_argv(job, install: Install, tag: str, params: dict[str, object]) -> l
     return argv
 
 
+def declared_preflight(install: Install, tag: str, params: dict[str, object]
+                       ) -> Callable[[str], str | None]:
+    """Run the checks a job DECLARES, and return why it must not start.
+
+    Without this the `preflight` field on a job is documentation: the registry validates
+    that every declared check is implemented, but nothing would actually call it, and the
+    job would run unguarded — the precise fail-open the field exists to prevent.
+    """
+    from drivers import preflight as checks
+
+    def run(job_id: str) -> str | None:
+        job = find_job(job_id)
+        for name in job.preflight:
+            if name == "fr-history-present":
+                year = params.get("year")
+                if year is None:
+                    continue
+                outcome = checks.check_fr_history(
+                    install.data_dir / "pricemodeling.db", int(year))
+            elif name == "markup-model-present":
+                outcome = checks.check_markup_model(
+                    install.code_dir(tag) / "dispatch_model" / "reports")
+            elif name == "cmip6-deltas-present":
+                outcome = checks.check_cmip6_deltas(
+                    install.code_dir(tag) / "weathergen" / "config.yaml")
+            else:  # pragma: no cover - validate_registry forbids reaching this
+                continue
+            if not outcome.ok:
+                return outcome.reason
+        return None
+
+    return run
+
+
 class JobEngine:
     """Runs one upstream command at a time, against one installed release."""
 
@@ -186,6 +220,8 @@ class JobEngine:
         self.tail = []
         self.progress = None
 
+        if preflight is None:
+            preflight = declared_preflight(self.install, self.tag, params or {})
         if preflight is not None:
             refusal = preflight(job_id)
             if refusal:

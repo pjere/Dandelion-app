@@ -413,6 +413,13 @@ JOBS: tuple[Job, ...] = (
         argv=("dispatch-model", "-c", "config.yaml", "backtest", "--year", "{year}"),
         cwd="dispatch_model",
         progress_label="backtest {year}",
+        preflight=("fr-history-present",),
+        notes=(
+            "The FR leg comes from master_hourly (io/fr_history.py:22), which build_master "
+            "fills from the RTE consumption series. ENTSO-E is NOT a substitute: its "
+            "fallback in build_master.py:84 covers prod_* generation only, by design. A "
+            "backtest therefore needs RTE credentials, not just an ENTSO-E token."
+        ),
         upstream_ref="dispatch_model/dispatch_model/cli.py:44",
     ),
 
@@ -553,7 +560,8 @@ SEEDED_FROM_RELEASE = (
 
 
 #: Preflight checks implemented in `drivers.preflight`. A job may only name one of these.
-IMPLEMENTED_PREFLIGHTS = ("cmip6-deltas-present", "markup-model-present")
+IMPLEMENTED_PREFLIGHTS = ("cmip6-deltas-present", "markup-model-present",
+                          "fr-history-present")
 
 
 def validate_registry() -> list[str]:

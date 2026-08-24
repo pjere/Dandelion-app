@@ -43,6 +43,11 @@ import yaml
 #: filename embeds the model, so using the stale value silently looks for the wrong file.
 CMIP6_DEFAULT_MODEL = "mpi_esm1_2_lr"
 
+#: Hours of French demand a backtest year may be missing before it is refused. ABSOLUTE,
+#: not proportional: 1% of a year is 88 hours, enough to hide a missing Feb 29 or three
+#: whole days. Twelve covers a DST transition plus the odd genuine hole and nothing more.
+MISSING_HOURS_ALLOWED = 12
+
 
 @dataclass
 class Preflight:
@@ -175,6 +180,107 @@ def check_markup_model(reports_dir: Path) -> Preflight:
     )
 
 
+
+# --------------------------------------------------------------------------------------
+# French history for a backtest
+# --------------------------------------------------------------------------------------
+# THE FAILURE THIS PREVENTS
+#
+# `backtest` opens the year with `load_fr_netload` (io/fr_history.py:22), which reads
+# `conso_realised` and the `prod_*` columns straight out of `master_hourly`. That table is
+# built by `pricemodeling.merge.build_master` from the RTE series
+# (`rte_consumption_short_term` -> `conso`), and its docstring is explicit that the FR leg
+# works "without any ENTSO-E dependency".
+#
+# The ENTSO-E fallback in build_master.py:84 covers GENERATION only — every key in
+# `ENTSOE_FALLBACK` is a `prod_*` column. There is deliberately no counterpart for
+# consumption: "ENTSO-E ecarte la jambe consommation" (build_master.py:81). So an install
+# holding a complete ENTSO-E history still cannot back-test: `load_fr_netload` returns an
+# empty frame and the run dies much later inside pandas, after the config, the workbook,
+# the commodity model and every neighbour stack have already been built.
+#
+# An ENTSO-E token alone therefore does NOT unblock a backtest. RTE credentials do.
+
+def check_fr_history(database: Path, year: int) -> Preflight:
+    """Refuse to back-test a year whose French demand history is not in `master_hourly`.
+
+    Read-only, and cheap: one indexed range count rather than a scan.
+    """
+    import sqlite3
+
+    check = "fr-history-present"
+    database = Path(database)
+    if not database.is_file():
+        return Preflight(
+            False, check,
+            f"There is no database at {database} yet. A backtest needs French demand and "
+            f"generation history, which is downloaded with your RTE account.",
+            remedy_job="extract-rte", remedy_args={"years": year},
+            detail={"database": str(database)},
+        )
+    try:
+        connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True,
+                                     timeout=2.0)
+        connection.execute("PRAGMA query_only = 1")
+        with connection:
+            table = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='master_hourly'"
+            ).fetchone()
+            hours, has_column = 0, False
+            if table:
+                columns = {row[1] for row in
+                           connection.execute("PRAGMA table_info(master_hourly)")}
+                has_column = "conso_realised" in columns
+                if has_column:
+                    hours = connection.execute(
+                        "SELECT COUNT(conso_realised) FROM master_hourly "
+                        "WHERE ts_utc >= ? AND ts_utc < ?",
+                        (f"{year}-01-01", f"{year + 1}-01-01"),
+                    ).fetchone()[0]
+        connection.close()
+    except sqlite3.DatabaseError as exc:
+        return Preflight(False, check, f"The database could not be read: {exc}",
+                         detail={"database": str(database)})
+
+    if not table:
+        return Preflight(
+            False, check,
+            "The master table has not been built yet. Ingested data has to be merged into "
+            "`master_hourly` before any backtest can read it.",
+            remedy_job="build-master", detail={"database": str(database)},
+        )
+    if not has_column:
+        # Measured: with ENTSO-E ingested and no RTE, build_master emits master_hourly with
+        # price columns ONLY. The ENTSO-E fallback cannot bootstrap the French columns —
+        # build_master.py:120 skips any column not already present — so it repairs RTE data
+        # but never substitutes for its absence.
+        return Preflight(
+            False, check,
+            "The master table has no French demand column. It was built from ENTSO-E data "
+            "alone, which carries prices and generation but not consumption, so there is "
+            "nothing for a backtest to read. French demand comes from RTE.",
+            remedy_job="extract-rte", remedy_args={"years": year},
+            detail={"database": str(database), "column": "conso_realised"},
+        )
+
+    #: A leap year has 8784 hours. The tolerance is ABSOLUTE, not a percentage: 1% of a
+    #: year is 88 hours, which would quietly accept a missing Feb 29 (24 h) or three
+    #: missing days. Twelve hours covers a DST transition plus the odd genuine hole —
+    #: the owner's real 2019 is 8,759 of 8,760 — and nothing larger.
+    expected = 8784 if year % 4 == 0 and (year % 100 or year % 400 == 0) else 8760
+    if expected - hours > MISSING_HOURS_ALLOWED:
+        return Preflight(
+            False, check,
+            f"{year} has {hours:,} hours of French demand in master_hourly, "
+            f"{expected - hours:,} short of the {expected:,} the year contains. A backtest "
+            f"on a partial year produces numbers that look complete and are not.",
+            remedy_job="extract-rte", remedy_args={"years": year},
+            detail={"hours": hours, "expected": expected, "missing": expected - hours},
+        )
+    return Preflight(True, check, f"{year}: {hours:,} hours of French demand present",
+                     detail={"hours": hours, "expected": expected})
+
+
 def run_all(config_paths: dict[str, Path]) -> list[Preflight]:
     """Convenience for the job engine: run every applicable check it has inputs for."""
     out: list[Preflight] = []
@@ -182,4 +288,7 @@ def run_all(config_paths: dict[str, Path]) -> list[Preflight]:
         out.append(check_cmip6_deltas(config_paths["weathergen_config"]))
     if "dispatch_reports_dir" in config_paths:
         out.append(check_markup_model(config_paths["dispatch_reports_dir"]))
+    if "database" in config_paths and "backtest_year" in config_paths:
+        out.append(check_fr_history(config_paths["database"],
+                                    int(config_paths["backtest_year"])))
     return out
