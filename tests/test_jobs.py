@@ -129,3 +129,38 @@ def test_summaries_read_as_plain_english():
 def test_a_run_with_warnings_says_so():
     result = make(outcome="succeeded", duration_s=10, warning_lines=["[trend] something"])
     assert "warnings" in summarise(result)
+
+
+# ------------------------------------------------------------------- optional argv
+
+def test_optional_arguments_are_omitted_when_not_supplied(install):
+    """`extract-rte` with no dates must run over each resource's whole declared history.
+    An empty or literal `--start` would be a silently different ingest."""
+    argv = render_argv(find_job("extract-rte"), install, "v0.1.0", {})
+    assert "--start" not in argv and "--end" not in argv
+    assert argv[-1] == "extract-rte"
+
+
+def test_optional_arguments_appear_when_supplied(install):
+    argv = render_argv(find_job("extract-rte"), install, "v0.1.0",
+                       {"start": "2019-01-01", "end": "2020-01-01"})
+    assert argv[-4:] == ["--start", "2019-01-01", "--end", "2020-01-01"]
+
+
+def test_each_optional_flag_is_independent(install):
+    """Upstream treats --start and --end separately: `--start` alone means "from here to
+    the resource's natural end", which is a real query. Each flag is its own group so that
+    supplying one never drags in a half-rendered other."""
+    argv = render_argv(find_job("extract-rte"), install, "v0.1.0", {"start": "2019-01-01"})
+    assert argv[-2:] == ["--start", "2019-01-01"]
+    assert "--end" not in argv
+
+
+def test_an_unrelated_parameter_does_not_trigger_a_group(install):
+    argv = render_argv(find_job("extract-rte"), install, "v0.1.0", {"force": "yes"})
+    assert "--start" not in argv and "--only" not in argv
+
+
+def test_optional_groups_do_not_disturb_required_placeholders(install):
+    argv = render_argv(find_job("dispatch-backtest"), install, "v0.1.0", {"year": 2019})
+    assert "2019" in argv

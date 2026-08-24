@@ -128,6 +128,16 @@ def render_argv(job, install: Install, tag: str, params: dict[str, object]) -> l
                 f"job {job.id!r} needs a value for {rendered} and none was given"
             )
         argv.append(rendered)
+
+    for group in getattr(job, "optional_argv", ()):
+        needed = {m for token in group for m in re.findall(r"\{([a-z_]+)\}", token)}
+        if not needed or not needed <= params.keys():
+            continue
+        for token in group:
+            rendered = token
+            for key, value in values.items():
+                rendered = rendered.replace("{" + key + "}", value)
+            argv.append(rendered)
     return argv
 
 

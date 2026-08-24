@@ -83,6 +83,11 @@ class Job:
     kind: Kind
     stage: Stage
     argv: tuple[str, ...]
+    #: Argument groups appended only when EVERY placeholder in the group has a value.
+    #: Upstream options like `extract-rte --start/--end` narrow a job that otherwise runs
+    #: over the resource's whole declared history; omitting them entirely is the correct
+    #: default, so they cannot live in `argv` where a missing value is an error.
+    optional_argv: tuple[tuple[str, ...], ...] = ()
     #: working directory, relative to the extracted code root. Never empty: several
     #: upstream paths are cwd-relative (see anchoring.Anchor.CWD).
     cwd: str = "."
@@ -151,6 +156,7 @@ JOBS: tuple[Job, ...] = (
         id="extract-rte", title="RTE resources",
         kind=Kind.MODULE, stage=Stage.DATA,
         argv=("{python}", "-m", "pricemodeling", "extract-rte"),
+        optional_argv=(("--start", "{start}"), ("--end", "{end}"), ("--only", "{only}")),
         needs_credentials=("RTE_CLIENT_ID", "RTE_CLIENT_SECRET"),
         failure_markers=ERREUR,
         resumable=True,
