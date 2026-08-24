@@ -16,16 +16,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from drivers.preflight import check_fr_history  # noqa: E402
+from drivers.preflight import FR_HISTORY_COLUMNS, check_fr_history  # noqa: E402
 
 
 def make_master(path: Path, year: int, hours: int, *, table: bool = True) -> Path:
+    """A master with the FULL column set, so the hour-count tests isolate the hour count."""
     con = sqlite3.connect(path)
     if table:
-        con.execute("CREATE TABLE master_hourly (ts_utc TEXT, conso_realised REAL)")
+        cols = ", ".join(f"{c} REAL" for c in FR_HISTORY_COLUMNS)
+        con.execute(f"CREATE TABLE master_hourly (ts_utc TEXT, {cols})")
+        holes = ",".join("?" * (len(FR_HISTORY_COLUMNS) + 1))
         con.executemany(
-            "INSERT INTO master_hourly VALUES (?, ?)",
-            [(f"{year}-01-01T{h % 24:02d}:00:00+00:00", 50000.0) for h in range(hours)],
+            f"INSERT INTO master_hourly VALUES ({holes})",
+            [(f"{year}-01-01T{h % 24:02d}:00:00+00:00",
+              *([50000.0] * len(FR_HISTORY_COLUMNS))) for h in range(hours)],
         )
     else:
         con.execute("CREATE TABLE ingest_log (source TEXT)")
@@ -195,3 +199,38 @@ def test_a_complete_install_passes(tmp_path):
     con.close()
     result = check_stack_inputs(path, 2019)
     assert result.ok and result.detail == {"zones": 3, "units": 50}
+
+
+def test_a_master_missing_generation_columns_is_refused(tmp_path):
+    """Measured: a master built from 2019 alone has no `prod_wind_offshore` column, because
+    France commissioned none before 2022 and build_master PIVOTS whatever RTE reported. The
+    2019 backtest died on exactly that. `conso_realised` being present proves nothing."""
+    path = tmp_path / "m.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE master_hourly (ts_utc TEXT, conso_realised REAL, "
+                "prod_solar REAL, prod_wind_onshore REAL)")
+    con.executemany("INSERT INTO master_hourly VALUES (?,?,?,?)",
+                    [(f"2019-01-01T{h:02d}:00:00+00:00", 5e4, 0.0, 0.0) for h in range(24)])
+    con.commit()
+    con.close()
+    result = check_fr_history(path, 2019)
+    assert not result.ok
+    assert "prod_wind_offshore" in result.reason
+    assert "2022" in result.reason, "explain WHY the column is absent"
+    assert len(result.detail["missing"]) == 10, "name every missing column, not just one"
+
+
+def test_a_complete_column_set_passes(tmp_path):
+    from drivers.preflight import FR_HISTORY_COLUMNS
+
+    path = tmp_path / "m.db"
+    con = sqlite3.connect(path)
+    cols = ", ".join(f"{c} REAL" for c in FR_HISTORY_COLUMNS)
+    con.execute(f"CREATE TABLE master_hourly (ts_utc TEXT, {cols})")
+    holes = ",".join("?" * (len(FR_HISTORY_COLUMNS) + 1))
+    con.executemany(f"INSERT INTO master_hourly VALUES ({holes})",
+                    [(f"2019-01-01T{h % 24:02d}:00:00+00:00",
+                      *([1.0] * len(FR_HISTORY_COLUMNS))) for h in range(8760)])
+    con.commit()
+    con.close()
+    assert check_fr_history(path, 2019).ok

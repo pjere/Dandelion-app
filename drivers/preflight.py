@@ -48,6 +48,23 @@ CMIP6_DEFAULT_MODEL = "mpi_esm1_2_lr"
 #: whole days. Twelve covers a DST transition plus the odd genuine hole and nothing more.
 MISSING_HOURS_ALLOWED = 12
 
+#: Every column `io/fr_history.py:26` puts in its SELECT. It is a fixed list, so a master
+#: table missing ANY of them fails the query outright — `conso_realised` being present
+#: proves nothing about the rest.
+#:
+#: These columns are created by build_master's PIVOT of the RTE generation series, which
+#: means the master's shape depends on WHICH YEARS were ingested. France commissioned no
+#: offshore wind until 2022, so RTE never reports that category for 2019, and a master
+#: built from 2019 alone has no `prod_wind_offshore` column at all. Measured: the 2019
+#: backtest died with `no such column: prod_wind_offshore` on exactly such a database.
+FR_HISTORY_COLUMNS = (
+    "conso_realised",
+    "prod_solar", "prod_wind_onshore", "prod_wind_offshore",
+    "prod_hydro_run_of_river_and_poundage",
+    "prod_nuclear", "prod_fossil_gas", "prod_fossil_hard_coal", "prod_fossil_oil",
+    "prod_biomass", "prod_waste", "prod_hydro_water_reservoir", "prod_hydro_pumped_storage",
+)
+
 
 @dataclass
 class Preflight:
@@ -226,11 +243,12 @@ def check_fr_history(database: Path, year: int) -> Preflight:
             table = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='master_hourly'"
             ).fetchone()
-            hours, has_column = 0, False
+            hours, has_column, missing = 0, False, ()
             if table:
                 columns = {row[1] for row in
                            connection.execute("PRAGMA table_info(master_hourly)")}
                 has_column = "conso_realised" in columns
+                missing = tuple(c for c in FR_HISTORY_COLUMNS if c not in columns)
                 if has_column:
                     hours = connection.execute(
                         "SELECT COUNT(conso_realised) FROM master_hourly "
@@ -261,6 +279,21 @@ def check_fr_history(database: Path, year: int) -> Preflight:
             "nothing for a backtest to read. French demand comes from RTE.",
             remedy_job="extract-rte", remedy_args={"years": year},
             detail={"database": str(database), "column": "conso_realised"},
+        )
+
+    if missing:
+        return Preflight(
+            False, check,
+            f"The master table is missing {len(missing)} of the columns a backtest reads: "
+            f"{', '.join(missing)}. These are created by pivoting the RTE generation "
+            f"series, so the table's shape follows whichever years were downloaded — "
+            f"France commissioned no offshore wind before 2022, for instance, so a master "
+            f"built from 2019 alone has no column for it. Downloading a recent year as "
+            f"well and rebuilding the master creates the full set.",
+            remedy_job="extract-rte",
+            remedy_args={"only": "generation_per_type", "start": "2023-01-01",
+                         "end": "2024-01-01"},
+            detail={"missing": list(missing)},
         )
 
     #: A leap year has 8784 hours. The tolerance is ABSOLUTE, not a percentage: 1% of a
