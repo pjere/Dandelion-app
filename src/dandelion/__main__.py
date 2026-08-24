@@ -83,9 +83,12 @@ def main(argv: list[str] | None = None) -> int:
         # Builds the interface and exits. This is what proves a frozen binary carries
         # NiceGUI's static assets: they are loaded when the page is constructed, so a
         # missing bundle fails here rather than as a blank window on a user's machine.
+        from dandelion.studio import run as run_studio
         from dandelion.wizard import run as run_wizard
 
         run_wizard(headless_check=True)
+        if INSTALL_MANIFEST.is_file():
+            run_studio(headless_check=True)
         print("interface built OK")
         return 0
 
@@ -96,8 +99,9 @@ def main(argv: list[str] | None = None) -> int:
         force = "native"
 
     if INSTALL_MANIFEST.is_file():
-        print(f"{PRODUCT_NAME} {__version__}: Studio is built in a later phase.")
-        return 0
+        from dandelion.studio import run as run_studio
+
+        return run_studio(force_mode=force)
 
     from dandelion.wizard import run as run_wizard
 
