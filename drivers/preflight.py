@@ -441,6 +441,102 @@ def check_stack_inputs(database: Path, year: int) -> Preflight:
                      detail={"zones": zones, "units": units, "remit": remit})
 
 
+
+# --------------------------------------------------------------------------------------
+# Cluster zones for the requested year
+# --------------------------------------------------------------------------------------
+# THE FAILURE THIS PREVENTS
+#
+# dispatch_model's config declares thirteen zones: eight real ones plus four virtual
+# clusters built from constituent bidding zones (neighbours/blocks.py:114). Those clusters
+# were added at different times for different studies — IT_SOUTH came from issue #142,
+# whose evidence is all measured on 2024.
+#
+# A cluster whose constituents have no data for the requested year does not fail. It is
+# built from whatever is there, and prices whatever that implies. Measured on a 2019
+# backtest, with the full 13-zone config and every ENTSO-E series ingested for that year:
+#
+#     IT_SOUTH   mean 181.19 EUR/MWh   max 15000.000   <- the LP's value of lost load
+#     IT_NORTH   moved from -2.6% to -7.3% once IT_SOUTH was modelled alongside it
+#
+# Two causes, both structural rather than fixable by downloading more:
+#   * IT_CALA did not exist as a separate bidding zone in 2019 — it was carved out of
+#     IT_SUD later — so ENTSO-E returns nothing for it and one sixth of the cluster is
+#     simply absent;
+#   * ENTSO-E publishes Italian installed capacity at COUNTRY level ("IT"), never per
+#     bidding zone, so load_installed_capacity finds nothing for any Italian zone and the
+#     stack falls back to a generation proxy.
+#
+# The number that comes out is not a bad estimate; it is 68 hours of unserved energy priced
+# at VoLL and a cluster mean four times the market. It looks like a result.
+
+#: neighbours/blocks.py:114. Kept here rather than imported: drivers/ describes upstream, it
+#: does not run it, and a check that needs the model importable is a check that cannot run
+#: before the environment is built.
+CLUSTER_CONSTITUENTS: dict[str, tuple[str, ...]] = {
+    "IT_SOUTH": ("IT_CNOR", "IT_CSUD", "IT_SUD", "IT_CALA", "IT_SICI", "IT_SARD"),
+    "NL": ("NL",),
+    "DK": ("DK_1", "DK_2"),
+    "PL_CZ": ("PL", "CZ"),
+    "AT_SI": ("AT", "SI"),
+}
+
+
+def check_cluster_zones(database: Path, year: int) -> Preflight:
+    """Refuse a year whose virtual cluster zones have no data behind them."""
+    import sqlite3
+
+    check = "cluster-zones-present"
+    database = Path(database)
+    if not database.is_file():
+        return Preflight(False, check, f"There is no database at {database} yet.")
+    try:
+        connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True,
+                                     timeout=2.0)
+        connection.execute("PRAGMA query_only = 1")
+        with connection:
+            tables = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            # `with connection` is a TRANSACTION scope, not a closing one — closing inside
+            # it makes the exit raise "Cannot operate on a closed database". Collect first,
+            # close once, decide afterwards.
+            has_load = "entsoe_load" in tables
+            empty: dict[str, list[str]] = {}
+            if has_load:
+                for cluster, members in CLUSTER_CONSTITUENTS.items():
+                    missing = [
+                        z for z in members
+                        if not connection.execute(
+                            "SELECT 1 FROM entsoe_load WHERE series_key = ? "
+                            "AND ts_utc >= ? AND ts_utc < ? LIMIT 1",
+                            (z, f"{year}-01-01", f"{year + 1}-01-01")).fetchone()
+                    ]
+                    if missing:
+                        empty[cluster] = missing
+        connection.close()
+        if not has_load:
+            return Preflight(False, check, "No ENTSO-E load has been downloaded yet.",
+                             remedy_job="backfill-entsoe", remedy_args={"years": year})
+    except sqlite3.DatabaseError as exc:
+        return Preflight(False, check, f"The database could not be read: {exc}")
+
+    if empty:
+        detail = "; ".join(f"{c} is missing {', '.join(z)}" for c, z in empty.items())
+        return Preflight(
+            False, check,
+            f"Some of the grouped neighbour zones have no {year} data: {detail}. A group "
+            f"built from part of itself still produces prices, and they can be wildly "
+            f"wrong - a 2019 run priced southern Italy at 181 EUR/MWh against a market "
+            f"around 50. Some of this is not downloadable: bidding zones that did not "
+            f"exist in {year} have no data to fetch, so a more recent year is the answer "
+            f"rather than another download.",
+            remedy_job=None,
+            detail={"incomplete": {c: list(z) for c, z in empty.items()}},
+        )
+    return Preflight(True, check, f"all {len(CLUSTER_CONSTITUENTS)} grouped zones have "
+                                  f"{year} data")
+
+
 def run_all(config_paths: dict[str, Path]) -> list[Preflight]:
     """Convenience for the job engine: run every applicable check it has inputs for."""
     out: list[Preflight] = []
@@ -453,4 +549,6 @@ def run_all(config_paths: dict[str, Path]) -> list[Preflight]:
                                     int(config_paths["backtest_year"])))
         out.append(check_stack_inputs(config_paths["database"],
                                       int(config_paths["backtest_year"])))
+        out.append(check_cluster_zones(config_paths["database"],
+                                       int(config_paths["backtest_year"])))
     return out

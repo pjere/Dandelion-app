@@ -181,6 +181,12 @@ def declared_preflight(install: Install, tag: str, params: dict[str, object]
                     continue
                 outcome = checks.check_stack_inputs(
                     install.data_dir / "pricemodeling.db", int(year))
+            elif name == "cluster-zones-present":
+                year = params.get("year")
+                if year is None:
+                    continue
+                outcome = checks.check_cluster_zones(
+                    install.data_dir / "pricemodeling.db", int(year))
             elif name == "markup-model-present":
                 # Honour a run overlay: reports_dir follows the config file, not the tree.
                 config = params.get("config")

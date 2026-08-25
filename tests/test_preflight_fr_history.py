@@ -261,3 +261,64 @@ def test_missing_remit_is_caught_before_the_run_not_two_minutes_in(tmp_path):
     assert not result.ok
     assert result.remedy_job == "ingest-remit"
     assert result.remedy_args == {"start": "2019-01-01", "end": "2020-01-01"}
+
+
+# ------------------------------------------------------ virtual cluster zones
+
+from drivers.preflight import CLUSTER_CONSTITUENTS, check_cluster_zones  # noqa: E402
+
+
+def make_load(path: Path, year: int, zones) -> Path:
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE entsoe_load (series_key TEXT, ts_utc TEXT, value REAL)")
+    con.executemany("INSERT INTO entsoe_load VALUES (?,?,?)",
+                    [(z, f"{year}-06-01T12:00:00+00:00", 1.0) for z in zones])
+    con.commit()
+    con.close()
+    return path
+
+
+def every_constituent():
+    return [z for members in CLUSTER_CONSTITUENTS.values() for z in members]
+
+
+def test_a_complete_year_passes(tmp_path):
+    assert check_cluster_zones(make_load(tmp_path / "m.db", 2024, every_constituent()),
+                               2024).ok
+
+
+def test_a_zone_that_did_not_exist_that_year_is_named(tmp_path):
+    """IT_CALA was carved out of IT_SUD after 2019, so ENTSO-E has nothing to return for it.
+    Measured: a 2019 run with IT_SOUTH modelled priced it at 181 EUR/MWh against a market
+    around 50, with 68 hours at the LP's value of lost load. It looks like a result."""
+    zones = [z for z in every_constituent() if z != "IT_CALA"]
+    result = check_cluster_zones(make_load(tmp_path / "m.db", 2019, zones), 2019)
+    assert not result.ok
+    assert "IT_CALA" in result.reason and "IT_SOUTH" in result.reason
+    assert result.detail["incomplete"] == {"IT_SOUTH": ["IT_CALA"]}
+
+
+def test_the_message_says_a_download_will_not_fix_it(tmp_path):
+    """The remedy is a different year, not another API call, and offering a download job
+    would send the user round a loop that cannot terminate."""
+    zones = [z for z in every_constituent() if z != "IT_CALA"]
+    result = check_cluster_zones(make_load(tmp_path / "m.db", 2019, zones), 2019)
+    assert result.remedy_job is None
+    assert "not downloadable" in result.reason or "did not exist" in result.reason
+
+
+def test_a_year_with_no_data_at_all_names_every_cluster(tmp_path):
+    result = check_cluster_zones(make_load(tmp_path / "m.db", 2024, every_constituent()),
+                                 2019)
+    assert not result.ok
+    assert set(result.detail["incomplete"]) == set(CLUSTER_CONSTITUENTS)
+
+
+def test_a_database_with_no_load_table_offers_the_ingest(tmp_path):
+    path = tmp_path / "m.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE ingest_log (source TEXT)")
+    con.commit()
+    con.close()
+    result = check_cluster_zones(path, 2019)
+    assert not result.ok and result.remedy_job == "backfill-entsoe"

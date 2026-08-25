@@ -541,7 +541,8 @@ JOBS: tuple[Job, ...] = (
         argv=("dispatch-model", "-c", "config.yaml", "backtest", "--year", "{year}"),
         cwd="dispatch_model",
         progress_label="backtest {year}",
-        preflight=("fr-history-present", "stack-inputs-present"),
+        preflight=("fr-history-present", "stack-inputs-present",
+                   "cluster-zones-present"),
         notes=(
             "The FR leg comes from master_hourly (io/fr_history.py:22), which build_master "
             "fills from the RTE consumption series. ENTSO-E is NOT a substitute: its "
@@ -689,7 +690,8 @@ SEEDED_FROM_RELEASE = (
 
 #: Preflight checks implemented in `drivers.preflight`. A job may only name one of these.
 IMPLEMENTED_PREFLIGHTS = ("cmip6-deltas-present", "markup-model-present",
-                          "fr-history-present", "stack-inputs-present")
+                          "fr-history-present", "stack-inputs-present",
+                          "cluster-zones-present")
 
 
 def validate_registry() -> list[str]:
