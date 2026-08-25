@@ -269,3 +269,52 @@ def test_a_complete_year_keeps_the_shipped_config(install, monkeypatch):
     argv = jobs.render_argv(jobs.find_job("dispatch-backtest"), install, "v0.1.0", params)
     assert argv.count("-c") == 1
     assert argv[argv.index("-c") + 1] == "config.yaml", "the shipped default is preserved"
+
+
+def test_a_job_whose_prerequisite_never_ran_is_refused(install, monkeypatch):
+    """`requires` was the third field declared and enforced nowhere. Upstream does not
+    enforce these either -- a missing prerequisite degrades quietly -- which is exactly why
+    the edges are recorded here."""
+    import dandelion.jobs as jobs
+
+    monkeypatch.setattr(jobs.credentials, "status_by_field", lambda: {})
+    engine = jobs.JobEngine(install, "v0.1.0")
+    result = engine.run("weathergen-simulate", {})
+    assert result.outcome == "refused"
+    assert "Fit the weather generator" in result.reason
+    assert "Nothing has changed" in result.reason
+
+
+def test_a_satisfied_prerequisite_unblocks_the_job(install, monkeypatch):
+    import dandelion.jobs as jobs
+
+    engine = jobs.JobEngine(install, "v0.1.0")
+    engine.journal.record(
+        make(job_id="weathergen-fit", outcome="succeeded"), tag="v0.1.0")
+    check = jobs.declared_preflight(install, "v0.1.0", {})
+    # Other checks still apply on a bare temp install (the cmip6 one wants a config file);
+    # what matters here is that the PREREQUISITE is no longer what stops it.
+    assert "Fit the weather generator" not in (check("weathergen-simulate") or "")
+
+
+def test_a_prerequisite_run_under_a_different_release_does_not_count(install):
+    """Output from another build of the model is not evidence this one has been fitted."""
+    import dandelion.jobs as jobs
+
+    engine = jobs.JobEngine(install, "v0.1.0")
+    engine.journal.record(make(job_id="weathergen-fit", outcome="succeeded"), tag="v0.0.9")
+    check = jobs.declared_preflight(install, "v0.1.0", {})
+    assert "Fit the weather generator" in (check("weathergen-simulate") or "")
+
+
+def test_every_run_is_journalled_including_a_refusal(install, monkeypatch):
+    """A refusal is history worth keeping: it is what the user hit last time."""
+    import dandelion.jobs as jobs
+
+    monkeypatch.setattr(jobs.credentials, "status_by_field", lambda: {})
+    engine = jobs.JobEngine(install, "v0.1.0")
+    engine.run("backfill-entsoe", {"years": 2019})
+    recorded = engine.journal.entries()
+    assert len(recorded) == 1
+    assert recorded[0].job_id == "backfill-entsoe" and recorded[0].outcome == "refused"
+    assert recorded[0].params == {"years": 2019}

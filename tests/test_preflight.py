@@ -241,3 +241,44 @@ def test_we_do_not_enable_the_allocation_upstream_switched_off():
     source = Path(inventory.__file__).read_text(encoding="utf-8")
     assert "DISPATCH_AREA_CAPACITY" in source, "the decision must be recorded"
     assert '"DISPATCH_AREA_CAPACITY"' not in source, "and never set as an env var"
+
+
+# --------------------------------------------------------------- dependency edges
+
+def test_every_projection_requires_its_own_calibration():
+    """Each edge is a real `.load()` of a file the other job writes, checked in the release
+    tree rather than assumed from the naming:
+
+        demand   projection/engine.py:125-126  calibrated.json, residual.json
+        res      projection/engine.py:64-65    calibrated_res.json, residual_res.json
+        avail    projection/engine.py:143      calibrated_availability.json
+    """
+    for projection, calibration in (("demand-project", "demand-calibrate"),
+                                    ("res-project", "res-calibrate"),
+                                    ("avail-project", "avail-calibrate")):
+        assert calibration in job(projection).requires, projection
+
+
+def test_the_weather_dependent_projections_need_a_simulated_cube():
+    """demand: 'from weathergen weather'; res: 'from the weather draws ... coherent with
+    demand'. Availability draws outages from its fitted process and needs no cube."""
+    for weather_dependent in ("demand-project", "res-project"):
+        assert "weathergen-simulate" in job(weather_dependent).requires
+    assert "weathergen-simulate" not in job("avail-project").requires
+
+
+def test_no_dependency_cycles():
+    """A cycle would make both jobs permanently unrunnable, and the refusal message would
+    point each at the other."""
+    seen: dict[str, int] = {}
+
+    def visit(job_id: str, stack: tuple[str, ...]) -> None:
+        assert job_id not in stack, f"cycle: {' -> '.join(stack + (job_id,))}"
+        if seen.get(job_id):
+            return
+        for dep in job(job_id).requires:
+            visit(dep, stack + (job_id,))
+        seen[job_id] = 1
+
+    for j in JOBS:
+        visit(j.id, ())

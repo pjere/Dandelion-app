@@ -510,6 +510,14 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="demand-project", title="Project demand",
+        requires=("demand-calibrate", "weathergen-simulate"),
+        produces=("demand_model/output/",),
+        notes=(
+            "projection/engine.py:125-126 loads calibrated.json and residual.json from "
+            "models_dir, both written by `calibrate` (pipeline.py:17,41). The docstring "
+            "is explicit that it projects 'from weathergen weather', so simulation.nc "
+            "must exist too."
+        ),
         kind=Kind.CONSOLE, stage=Stage.MODELS,
         argv=("demand-model", "-c", "config.yaml", "project"),
         cwd="demand_model",
@@ -526,6 +534,13 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="res-project", title="Project RES production",
+        requires=("res-calibrate", "weathergen-simulate"),
+        produces=("res_model/output/",),
+        notes=(
+            "projection/engine.py:64-65 loads calibrated_res.json and residual_res.json, "
+            "written by `calibrate` (pipeline.py:12,26). Projects 'from the weather "
+            "draws ... (coherent with demand)', so it needs the same cube demand used."
+        ),
         kind=Kind.CONSOLE, stage=Stage.MODELS,
         argv=("res-model", "-c", "config.yaml", "project"),
         cwd="res_model",
@@ -541,6 +556,13 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="avail-project", title="Simulate unit availability",
+        requires=("avail-calibrate",),
+        produces=("availability_model/output/",),
+        notes=(
+            "projection/engine.py:143 loads calibrated_availability.json from models_dir, "
+            "written by `calibrate`. No weather dependency: plant outages are drawn from "
+            "the fitted process, not from the weather cube."
+        ),
         kind=Kind.CONSOLE, stage=Stage.MODELS,
         argv=("avail-model", "-c", "config.yaml", "project"),
         cwd="availability_model",

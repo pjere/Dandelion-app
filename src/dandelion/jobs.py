@@ -33,6 +33,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from dandelion import credentials
+from dandelion.journal import Journal
 from dandelion.paths import Install
 from dandelion.process_group import ProcessGroup, TerminationResult
 from drivers.inventory import PROGRESS_COUNTER_RE, PROGRESS_RE, Kind
@@ -193,6 +194,15 @@ def declared_preflight(install: Install, tag: str, params: dict[str, object]
 
     def run(job_id: str) -> str | None:
         job = find_job(job_id)
+        # `requires` was the third field declared and enforced nowhere, after `preflight`
+        # and `needs_credentials`. validate_registry checked that the edge pointed at a real
+        # job; nothing checked it had ever run. The edges exist precisely because upstream
+        # does not enforce them — a missing prerequisite degrades quietly rather than
+        # stopping — so leaving them unenforced reproduced the failure they document.
+        unmet = Journal(install.journal_file).missing_prerequisites(job_id, tag)
+        if unmet:
+            titles = ", ".join(f"'{find_job(d).title}'" for d in unmet)
+            return f"This needs {titles} to have run first. Nothing has changed."
         if job.needs_credentials:
             stored = credentials.status_by_field()
             absent = [f for f in job.needs_credentials if not stored.get(f)]
@@ -250,6 +260,7 @@ class JobEngine:
         self._lock = threading.Lock()
         self._cancelled = False
         self.result: JobResult | None = None
+        self.journal = Journal(install.journal_file)
         self.tail: list[str] = []
         self.progress: Progress | None = None
 
@@ -310,7 +321,7 @@ class JobEngine:
                 result.outcome = "refused"
                 result.reason = refusal
                 result.finished_at = datetime.now(UTC).isoformat(timespec="seconds")
-                return result
+                return self._record(result, params)
 
         failure_patterns = [re.compile(p) for p in job.failure_markers]
         warning_patterns = [re.compile(p) for p in job.warning_markers]
@@ -339,7 +350,7 @@ class JobEngine:
                     result.outcome = "failed"
                     result.reason = f"Could not start {job_id}: {exc}"
                     log.write(result.reason + "\n")
-                    return self._finish(result, clock)
+                    return self._record(self._finish(result, clock), params)
 
                 assert self._process.stdout is not None
                 for raw in self._process.stdout:
@@ -369,7 +380,7 @@ class JobEngine:
             if self._group is not None:
                 self._group.close()
 
-        return self._finish(result, clock)
+        return self._record(self._finish(result, clock), params)
 
     def _finish(self, result: JobResult, clock: float) -> JobResult:
         result.duration_s = round(time.monotonic() - clock, 1)
@@ -389,6 +400,19 @@ class JobEngine:
             result.outcome = "succeeded"
 
         self._process = None
+        return result
+
+    def _record(self, result: JobResult, params: dict[str, object]) -> JobResult:
+        """Write the outcome down.
+
+        A journal that cannot be written must never lose the run itself: the work happened,
+        the log is on disk, and a full disk is not a reason to also throw away the result
+        the caller is waiting for.
+        """
+        try:
+            self.journal.record(result, tag=self.tag, params=params)
+        except OSError:
+            pass
         return result
 
     # ------------------------------------------------------------------ cancelling

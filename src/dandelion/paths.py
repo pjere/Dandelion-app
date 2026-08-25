@@ -70,6 +70,11 @@ class Install:
         return self.app_root / "logs"
 
     @property
+    def journal_file(self) -> Path:
+        """Every job this installation has run. Beside the logs it indexes."""
+        return self.app_root / "journal.jsonl"
+
+    @property
     def run_configs_dir(self) -> Path:
         """Generated config overlays.
 
