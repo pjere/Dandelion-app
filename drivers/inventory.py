@@ -556,6 +556,10 @@ JOBS: tuple[Job, ...] = (
         id="dispatch-backtest", title="Backtest on a historical year",
         kind=Kind.CONSOLE, stage=Stage.MODELS,
         argv=("dispatch-model", "-c", "config.yaml", "backtest", "--year", "{year}"),
+        # A second -c overrides the first: dispatch_model/cli.py:38 uses argparse, whose
+        # non-append actions keep the LAST value. That lets a degraded overlay be appended
+        # without disturbing the default, which stays correct for a complete year.
+        optional_argv=(("-c", "{config}"),),
         cwd="dispatch_model",
         progress_label="backtest {year}",
         preflight=("fr-history-present", "stack-inputs-present",

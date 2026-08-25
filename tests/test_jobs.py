@@ -226,3 +226,43 @@ def test_partial_credentials_name_only_what_is_missing(install, monkeypatch):
     reason = check("extract-rte")
     assert reason and "secret" in reason.lower()
     assert "client id" not in reason.lower()
+
+
+# ------------------------------------------------------------- graceful degradation
+
+def test_a_cluster_with_no_data_is_dropped_and_reported(install, monkeypatch, tmp_path):
+    """IT_SOUTH cannot be modelled for 2019 — IT_CALA did not exist yet — but the other
+    twelve zones can. The run proceeds against a generated overlay, and the dropped zone
+    becomes a warning on the result rather than a silent 181 EUR/MWh."""
+    import dandelion.jobs as jobs
+
+    source = install.code_dir("v0.1.0") / "dispatch_model" / "config.yaml"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        "run:\n  reports_dir: reports\nzones:\n  FR: {}\n  IT_SOUTH: {}\n"
+        "borders:\n  - [FR, IT_SOUTH]\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "drivers.preflight.check_cluster_zones",
+        lambda db, year: type("P", (), {"ok": True, "detail": {"incomplete": {"IT_SOUTH": ["IT_CALA"]}}})())
+
+    params = {"year": 2019}
+    dropped = jobs.degrade_for_missing_data(install, "v0.1.0", "dispatch-backtest", params)
+    assert dropped == ["IT_SOUTH"]
+    assert params["config"] == str(install.run_configs_dir / "dispatch-2019.yaml")
+
+    argv = jobs.render_argv(jobs.find_job("dispatch-backtest"), install, "v0.1.0", params)
+    assert argv[-2:] == ["-c", params["config"]]
+    assert argv.count("-c") == 2, "argparse keeps the last -c, so the default stays intact"
+
+
+def test_a_complete_year_keeps_the_shipped_config(install, monkeypatch):
+    import dandelion.jobs as jobs
+
+    monkeypatch.setattr("drivers.preflight.check_cluster_zones",
+                        lambda db, year: type("P", (), {"ok": True, "detail": {}})())
+    params = {"year": 2024}
+    assert jobs.degrade_for_missing_data(install, "v0.1.0", "dispatch-backtest", params) == []
+    assert "config" not in params
+    argv = jobs.render_argv(jobs.find_job("dispatch-backtest"), install, "v0.1.0", params)
+    assert argv.count("-c") == 1

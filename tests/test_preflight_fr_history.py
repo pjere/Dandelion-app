@@ -287,30 +287,32 @@ def test_a_complete_year_passes(tmp_path):
                                2024).ok
 
 
-def test_a_zone_that_did_not_exist_that_year_is_named(tmp_path):
-    """IT_CALA was carved out of IT_SUD after 2019, so ENTSO-E has nothing to return for it.
-    Measured: a 2019 run with IT_SOUTH modelled priced it at 181 EUR/MWh against a market
-    around 50, with 68 hours at the LP's value of lost load. It looks like a result."""
+def test_an_incomplete_cluster_degrades_rather_than_blocking(tmp_path):
+    """IT_CALA was carved out of IT_SUD after 2019, so ENTSO-E has nothing to return for it,
+    ever. Measured: a 2019 run with IT_SOUTH modelled priced it at 181 EUR/MWh against a
+    market near 50, with 68 hours at value of lost load.
+
+    Refusing the year would be wrong — the other twelve zones are fine and France does not
+    need Italy's south — so this reports ok=True with the cluster named for removal."""
     zones = [z for z in every_constituent() if z != "IT_CALA"]
     result = check_cluster_zones(make_load(tmp_path / "m.db", 2019, zones), 2019)
-    assert not result.ok
-    assert "IT_CALA" in result.reason and "IT_SOUTH" in result.reason
+    assert result.ok, "the run proceeds"
     assert result.detail["incomplete"] == {"IT_SOUTH": ["IT_CALA"]}
+    assert "IT_CALA" in result.reason and "left out" in result.reason
 
 
 def test_the_message_says_a_download_will_not_fix_it(tmp_path):
-    """The remedy is a different year, not another API call, and offering a download job
+    """A bidding zone that did not exist has nothing to fetch, so offering a download job
     would send the user round a loop that cannot terminate."""
     zones = [z for z in every_constituent() if z != "IT_CALA"]
     result = check_cluster_zones(make_load(tmp_path / "m.db", 2019, zones), 2019)
     assert result.remedy_job is None
-    assert "not downloadable" in result.reason or "did not exist" in result.reason
+    assert "nothing to fetch" in result.reason
 
 
 def test_a_year_with_no_data_at_all_names_every_cluster(tmp_path):
     result = check_cluster_zones(make_load(tmp_path / "m.db", 2024, every_constituent()),
                                  2019)
-    assert not result.ok
     assert set(result.detail["incomplete"]) == set(CLUSTER_CONSTITUENTS)
 
 

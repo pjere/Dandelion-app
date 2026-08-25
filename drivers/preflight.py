@@ -522,14 +522,16 @@ def check_cluster_zones(database: Path, year: int) -> Preflight:
 
     if empty:
         detail = "; ".join(f"{c} is missing {', '.join(z)}" for c, z in empty.items())
+        # NOT a refusal. The other zones are perfectly modellable and France - the point of
+        # the exercise - does not need Italy's south. `ok=True` with a populated `detail`
+        # means "run, but without these", and drivers.config_overlay does the removing.
         return Preflight(
-            False, check,
-            f"Some of the grouped neighbour zones have no {year} data: {detail}. A group "
-            f"built from part of itself still produces prices, and they can be wildly "
-            f"wrong - a 2019 run priced southern Italy at 181 EUR/MWh against a market "
-            f"around 50. Some of this is not downloadable: bidding zones that did not "
-            f"exist in {year} have no data to fetch, so a more recent year is the answer "
-            f"rather than another download.",
+            True, check,
+            f"Some grouped neighbour zones have no {year} data and will be left out of "
+            f"this run: {detail}. A group built from part of itself still produces prices, "
+            f"and they can be wildly wrong - a 2019 run priced southern Italy at 181 "
+            f"EUR/MWh against a market near 50. Some of this is not downloadable: a "
+            f"bidding zone that did not exist in {year} has nothing to fetch.",
             remedy_job=None,
             detail={"incomplete": {c: list(z) for c, z in empty.items()}},
         )

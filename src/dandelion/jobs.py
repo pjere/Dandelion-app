@@ -142,6 +142,36 @@ def render_argv(job, install: Install, tag: str, params: dict[str, object]) -> l
     return argv
 
 
+def degrade_for_missing_data(install: Install, tag: str, job_id: str,
+                             params: dict[str, object]) -> list[str]:
+    """Drop zones this year cannot support, and say which. Mutates `params["config"]`.
+
+    Upstream is read-only, so a cluster with no data behind it cannot be removed in code —
+    but `Config.all_zones` is just the keys of the config's `zones:` mapping, so it can be
+    removed in config. Returns the zones dropped, for the caller to report.
+    """
+    from drivers import preflight as checks
+    from drivers.config_overlay import write_zone_overlay
+
+    job = find_job(job_id)
+    if "cluster-zones-present" not in job.preflight or params.get("config"):
+        return []
+    year = params.get("year")
+    if year is None:
+        return []
+    outcome = checks.check_cluster_zones(install.data_dir / "pricemodeling.db", int(year))
+    incomplete = (outcome.detail or {}).get("incomplete") or {}
+    if not incomplete:
+        return []
+
+    source = install.code_dir(tag) / "dispatch_model" / "config.yaml"
+    target = install.run_configs_dir / f"dispatch-{year}.yaml"
+    dropped = write_zone_overlay(source, target, incomplete)
+    if dropped:
+        params["config"] = str(target)
+    return dropped
+
+
 def declared_preflight(install: Install, tag: str, params: dict[str, object]
                        ) -> Callable[[str], str | None]:
     """Run the checks a job DECLARES, and return why it must not start.
@@ -247,7 +277,9 @@ class JobEngine:
             self._cancelled = False
 
         job = find_job(job_id)
-        argv = render_argv(job, self.install, self.tag, params or {})
+        params = dict(params or {})
+        dropped = degrade_for_missing_data(self.install, self.tag, job_id, params)
+        argv = render_argv(job, self.install, self.tag, params)
         cwd = self.install.code_dir(self.tag) / job.cwd if job.cwd != "." \
             else self.install.code_dir(self.tag)
 
@@ -258,6 +290,12 @@ class JobEngine:
 
         result = JobResult(job_id=job_id, argv=argv, cwd=str(cwd), log_path=str(log_path),
                            started_at=started.isoformat(timespec="seconds"))
+        if dropped:
+            # A dropped zone changes what the run means, so it is a warning on the result
+            # and not merely a line in the log. `summarise` will say "with warnings".
+            result.warning_lines.append(
+                "Left out of this run for want of " + str(params.get("year", "")) +
+                " data: " + ", ".join(dropped))
         self.result = result
         self.tail = []
         self.progress = None

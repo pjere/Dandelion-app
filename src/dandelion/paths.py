@@ -70,6 +70,16 @@ class Install:
         return self.app_root / "logs"
 
     @property
+    def run_configs_dir(self) -> Path:
+        """Generated config overlays.
+
+        Deliberately OUTSIDE the code tree, so the extracted release stays byte-identical to
+        the archive it came from. The overlays carry absolute paths for exactly this reason
+        — see drivers.config_overlay.
+        """
+        return self.app_root / "configs"
+
+    @property
     def runs_dir(self) -> Path:
         return self.app_root / "runs"
 
