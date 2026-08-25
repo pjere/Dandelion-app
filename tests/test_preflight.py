@@ -217,3 +217,27 @@ def test_the_cluster_job_covers_every_zone_the_eight_zone_backfill_misses():
         assert f"S.{call}(eng,cl,s,e,zones=Z)" in ENTSOE_CLUSTERS_RUNNER, call
     assert job("backfill-entsoe-clusters").needs_credentials == ("ENTSOE_TOKEN",)
     assert job("backfill-entsoe-clusters").resumable
+
+
+def test_the_cluster_job_fetches_italian_capacity_at_control_area_level():
+    """Verified against the live API for 2019: `IT` returns 18 technologies and 94,373 MW;
+    IT_NORD, IT_CNOR, IT_CSUD, IT_SUD, IT_SICI, IT_SARD and IT_CALA all raise
+    NoMatchingDataError. ALL_ZONES therefore cannot reach it, and every Italian technology
+    falls through to the generation proxy."""
+    from drivers.inventory import ENTSOE_CLUSTERS_RUNNER
+
+    assert "CONTROL={'IT':'IT'}" in ENTSOE_CLUSTERS_RUNNER
+    assert "zones=CONTROL" in ENTSOE_CLUSTERS_RUNNER
+
+
+def test_we_do_not_enable_the_allocation_upstream_switched_off():
+    """DECISIONS.md:985 measured DISPATCH_AREA_CAPACITY and left it off: IT_NORTH 2019 goes
+    -2.1 to -13.7, 2022 -3.0 to -22.4. Fetching the data is ours to do; flipping a modelling
+    switch the author tested and rejected is not."""
+    from pathlib import Path
+
+    from drivers import inventory
+
+    source = Path(inventory.__file__).read_text(encoding="utf-8")
+    assert "DISPATCH_AREA_CAPACITY" in source, "the decision must be recorded"
+    assert '"DISPATCH_AREA_CAPACITY"' not in source, "and never set as an env var"

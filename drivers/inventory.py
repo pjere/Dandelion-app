@@ -183,11 +183,28 @@ ENTSOE_CLUSTERS_RUNNER = (
     "y=int(os.environ['DANDELION_YEAR']);"
     "s=date(y,1,1);e=date(y,12,31);"
     "Z=S.ALL_ZONES;"
+    # Italy publishes installed capacity at CONTROL-AREA level only. Verified against the
+    # live API for 2019: `IT` returns 18 technologies and 94,373 MW, while IT_NORD, IT_CNOR,
+    # IT_CSUD, IT_SUD, IT_SICI, IT_SARD and IT_CALA every one raise NoMatchingDataError. So
+    # ALL_ZONES cannot reach it and no Italian bidding zone ever finds a fleet — every
+    # Italian technology falls through to the p99.9-of-generation proxy, which under-reads
+    # energy-limited plant worst (io/area_capacity.py: IT-North reservoir 1.54 GW against an
+    # allocated 4.18, PSP 2.52 against 5.18).
+    #
+    # We ingest the row and deliberately DO NOT enable the allocation that consumes it.
+    # `DISPATCH_AREA_CAPACITY` is opt-in and upstream left it OFF after measuring it
+    # (DECISIONS.md:985): IT_NORTH 2019 goes -2.1 to -13.7 and 2022 -3.0 to -22.4, because a
+    # zone gets none of a technology it did not generate and Italian plant ran elsewhere in
+    # those years. 2024 and 2025 both improve. Upstream calls the ingested data
+    # "demonstrably right" and the key the weak part, so the data is ours to fetch and the
+    # switch is the author's to throw.
+    "CONTROL={'IT':'IT'};"
     "print('=== %d, %d zones ===' % (y, len(Z)), flush=True);"
     "print('  load     : %s' % S.ingest_load(eng,cl,s,e,zones=Z), flush=True);"
     "print('  gen      : %s' % S.ingest_generation(eng,cl,s,e,zones=Z), flush=True);"
     "print('  prices   : %s' % S.ingest_prices(eng,cl,s,e,zones=Z), flush=True);"
     "print('  capacity : %s' % S.ingest_installed_capacity(eng,cl,s,e,zones=Z), flush=True);"
+    "print('  IT area  : %s' % S.ingest_installed_capacity(eng,cl,s,e,zones=CONTROL), flush=True);"
     "print('  hydro    : %s' % S.ingest_hydro_storage(eng,cl,s,e,zones=Z), flush=True);"
     "print('DONE', flush=True)"
 )
