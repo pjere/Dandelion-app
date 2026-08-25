@@ -110,6 +110,14 @@ class Job:
     requires: tuple[str, ...] = ()
     #: `drivers.preflight` checks that must pass before the job is allowed to start.
     preflight: tuple[str, ...] = ()
+    #: Roughly how long one run takes, in seconds, MEASURED on this project's own runs
+    #: rather than guessed. Used to set expectations before a job starts, not to predict:
+    #: it varies with the year requested and the provider's mood.
+    typical_seconds: int = 0
+    #: True when the job prints NOTHING until it finishes. `ingest-remit` ran 17 minutes in
+    #: total silence, which is indistinguishable from a hang unless the window says so.
+    #: These jobs get an elapsed counter and a sentence, never a bare spinner.
+    quiet: bool = False
     notes: str = ""
     upstream_ref: str = ""
 
@@ -260,6 +268,7 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="extract-rte", title="RTE resources",
+        typical_seconds=645,
         kind=Kind.MODULE, stage=Stage.DATA,
         argv=("{python}", "-m", "pricemodeling", "extract-rte"),
         optional_argv=(("--start", "{start}"), ("--end", "{end}"), ("--only", "{only}")),
@@ -288,6 +297,7 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="backfill-entsoe", title="Multi-zone ENTSO-E (prices, load, generation, flows)",
+        typical_seconds=1700,
         kind=Kind.SCRIPT, stage=Stage.DATA,
         argv=("{python}", "-X", "utf8", "scripts/backfill_entsoe.py", "{years}"),
         cwd=".",
@@ -302,6 +312,8 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="ingest-remit", title="REMIT outage notifications",
+        typical_seconds=1025,
+        quiet=True,
         kind=Kind.MODULE, stage=Stage.DATA,
         argv=("{python}", "-m", "pricemodeling", "ingest-remit"),
         optional_argv=(("--start", "{start}"), ("--end", "{end}"), ("--zones", "{zones}")),
@@ -375,6 +387,8 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="reconcile-units", title="Reconcile production units",
+        typical_seconds=12,
+        quiet=True,
         kind=Kind.MODULE, stage=Stage.DATA,
         argv=("{python}", "-m", "pricemodeling", "reconcile-units"),
         produces=("data/reconciliation_report.csv",),
@@ -382,6 +396,7 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="backfill-entsoe-clusters",
+        typical_seconds=1650,
         title="ENTSO-E data for the thirteen cluster zones",
         kind=Kind.MODULE, stage=Stage.DATA,
         argv=("{python}", "-X", "utf8", "-c", ENTSOE_CLUSTERS_RUNNER),
@@ -401,6 +416,7 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="backfill-entsoe-extras",
+        typical_seconds=260,
         title="ENTSO-E installed capacity, hydro reservoirs and NTC",
         kind=Kind.MODULE, stage=Stage.DATA,
         argv=("{python}", "-X", "utf8", "-c", ENTSOE_EXTRAS_RUNNER),
@@ -420,6 +436,8 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="build-master", title="Rebuild the hourly master table",
+        typical_seconds=100,
+        quiet=True,
         kind=Kind.MODULE, stage=Stage.DATA,
         argv=("{python}", "-m", "pricemodeling", "build-master"),
         notes="The expensive one. Prints 'Fusion : <stats>'. Run after every ingest.",
@@ -582,6 +600,7 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="dispatch-backtest", title="Backtest on a historical year",
+        typical_seconds=1000,
         kind=Kind.CONSOLE, stage=Stage.MODELS,
         argv=("dispatch-model", "-c", "{config}", "backtest", "--year", "{year}"),
         defaults=(("config", "config.yaml"),),
