@@ -88,6 +88,12 @@ class Job:
     #: over the resource's whole declared history; omitting them entirely is the correct
     #: default, so they cannot live in `argv` where a missing value is an error.
     optional_argv: tuple[tuple[str, ...], ...] = ()
+    #: Values for argv placeholders when the caller supplies none. This is how an argument
+    #: that must keep its POSITION can still be overridden: `dispatch -c X backtest` puts
+    #: -c on the TOP-LEVEL parser, so appending a second one lands it after the subcommand
+    #: where argparse rejects it outright ("unrecognized arguments"). Substitution works;
+    #: appending does not.
+    defaults: tuple[tuple[str, str], ...] = ()
     #: working directory, relative to the extracted code root. Never empty: several
     #: upstream paths are cwd-relative (see anchoring.Anchor.CWD).
     cwd: str = "."
@@ -555,11 +561,8 @@ JOBS: tuple[Job, ...] = (
     Job(
         id="dispatch-backtest", title="Backtest on a historical year",
         kind=Kind.CONSOLE, stage=Stage.MODELS,
-        argv=("dispatch-model", "-c", "config.yaml", "backtest", "--year", "{year}"),
-        # A second -c overrides the first: dispatch_model/cli.py:38 uses argparse, whose
-        # non-append actions keep the LAST value. That lets a degraded overlay be appended
-        # without disturbing the default, which stays correct for a complete year.
-        optional_argv=(("-c", "{config}"),),
+        argv=("dispatch-model", "-c", "{config}", "backtest", "--year", "{year}"),
+        defaults=(("config", "config.yaml"),),
         cwd="dispatch_model",
         progress_label="backtest {year}",
         preflight=("fr-history-present", "stack-inputs-present",

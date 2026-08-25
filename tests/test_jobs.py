@@ -252,8 +252,10 @@ def test_a_cluster_with_no_data_is_dropped_and_reported(install, monkeypatch, tm
     assert params["config"] == str(install.run_configs_dir / "dispatch-2019.yaml")
 
     argv = jobs.render_argv(jobs.find_job("dispatch-backtest"), install, "v0.1.0", params)
-    assert argv[-2:] == ["-c", params["config"]]
-    assert argv.count("-c") == 2, "argparse keeps the last -c, so the default stays intact"
+    # -c sits on the TOP-LEVEL parser, so a second one lands after the subcommand and
+    # argparse rejects it outright. Measured: "unrecognized arguments: -c <path>".
+    assert argv.count("-c") == 1
+    assert argv[argv.index("-c") + 1] == params["config"]
 
 
 def test_a_complete_year_keeps_the_shipped_config(install, monkeypatch):
@@ -266,3 +268,4 @@ def test_a_complete_year_keeps_the_shipped_config(install, monkeypatch):
     assert "config" not in params
     argv = jobs.render_argv(jobs.find_job("dispatch-backtest"), install, "v0.1.0", params)
     assert argv.count("-c") == 1
+    assert argv[argv.index("-c") + 1] == "config.yaml", "the shipped default is preserved"

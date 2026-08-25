@@ -115,7 +115,9 @@ def render_argv(job, install: Install, tag: str, params: dict[str, object]) -> l
     its command inside that environment's Scripts directory rather than trusting PATH, which
     on a user's machine may hold a different Python entirely.
     """
-    values = {"python": str(install.python(tag)), **{k: str(v) for k, v in params.items()}}
+    values = {"python": str(install.python(tag)),
+              **dict(getattr(job, "defaults", ())),
+              **{k: str(v) for k, v in params.items()}}
     argv: list[str] = []
     for index, token in enumerate(job.argv):
         if index == 0 and job.kind is Kind.CONSOLE:

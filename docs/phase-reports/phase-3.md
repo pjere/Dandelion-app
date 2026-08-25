@@ -1,10 +1,9 @@
 # Phase 3 — Studio shell and the job engine
 
-**Date:** 2026-08-24
-**Status:** built and exercised against a real installation. Updated 2026-08-24 after the
-ENTSO-E token arrived. Cancellation is now verified on a real upstream job. **The backtest row
-is still not met**, for a reason this report originally got wrong: it needs RTE credentials,
-not the ENTSO-E token. See the correction below.
+**Date:** 2026-08-24, completed 2026-08-25 once credentials arrived
+**Status:** **gate met.** A one-year backtest runs end to end on real data from a clean-room
+rebuild, and cancellation is verified on a real upstream job. Two rows carry caveats, stated
+here rather than buried.
 
 ---
 
@@ -16,225 +15,202 @@ not the ENTSO-E token. See the correction below.
 | `jobs.py` | run one upstream command, decide honestly whether it worked |
 | `freshness.py` | how current the data is, from `ingest_log` rather than a table scan |
 | `studio.py` | the home page: what you have, what is missing, what is running |
+| `config_overlay.py` | run a model whose config claims only what the data supports |
 
-4,509 lines of application code against 2,542 lines of tests. **288 tests**, ruff and path
-guard clean, three commits.
+**348 tests**, ruff and path guard clean.
 
 ---
 
 ## The plan's central assumption was wrong
 
-The program specifies cancellation "via a Windows Job Object with kill-on-close". I built
+The program specifies cancellation "via a Windows Job Object with kill-on-close". Built
 exactly that, then tested it against a real `ProcessPoolExecutor` — the shape
-`run_montecarlo.py` actually uses:
+`run_montecarlo.py` uses:
 
 ```
-process tree    : 5 processes
+process tree : 5 processes
 after TerminateJobObject, still alive: [10984, 22656, 26412]
 ORPHANS: 3
 ```
 
-Three workers survived. Rather than patch around it, I measured why:
+The child joins the job; **its grandchildren do not**. Plain `subprocess` grandchildren
+behave identically, so it is not a multiprocessing quirk, and `CREATE_BREAKAWAY_FROM_JOB`
+changed nothing.
+
+So the contract became **"no orphan survives cancellation"**: terminate, verify, sweep the
+tree if anything still breathes, and report which mechanism was needed.
+
+### Verified on a real job
 
 ```
-is THIS process already in a job? True
-assign() returned  : True
-child in OUR job   : True
-grandchild ... in OUR job: False      <- the actual failure
+>>> running, process tree = 2 -> [19556, 2024]
+>>> cancelling
+job_object_used : True     escalated : False     survivors : NONE
+outcome         : cancelled                      summary   : cancelled after 24s
+independent orphan check: NONE
 ```
 
-The child joins the job; **its grandchildren do not**. Isolating further: plain `subprocess`
-grandchildren behave identically, so it is not a multiprocessing quirk. The outer job here has
-`BREAKAWAY_OK` set (`LimitFlags 0x00003000`), and explicitly requesting
-`CREATE_BREAKAWAY_FROM_JOB` changed nothing.
-
-**What this machine cannot settle** is whether that is peculiar to running inside another job —
-a terminal or IDE that already sandboxes its children — or whether it would also affect a user
-launching from Explorer. This shell *is* inside a job, so the clean case is unobservable here.
-
-### So the contract changed
-
-Not "the job object works" but **"no orphan survives cancellation"**: terminate the job, then
-verify, then sweep the process tree if anything is still breathing, and report which mechanism
-was needed.
-
-```
-ProcessPoolExecutor    tree= 5  job_object=True  escalated=True  survivors=0  CLEAN=True
-nested subprocess      tree= 8  job_object=True  escalated=True  survivors=0  CLEAN=True
-```
-
-`TerminationResult.escalated` is the useful part: on a clean VM, if it comes back `False`, job
-containment works on a normal machine and the tree sweep is pure insurance. The open question
-becomes a value somebody reads rather than an argument.
+`escalated: False` means the job object alone sufficed **for this shape** —
+`backfill_entsoe.py` is a parent and one child. It does not settle the grandchild question,
+because this job has no worker pool. `run_montecarlo.py` does, and that is Phase 6.
 
 ---
 
-## Exit code is not a success signal, demonstrated
+## Exit code is not a success signal, demonstrated twice
 
-The Phase 0 finding, now working behaviour. Run against the real installation with no token
-stored:
+Against an empty install, and then on a real ten-minute ingest where `extract-rte` exited 0
+having failed one resource:
 
 ```
-== extract-entsoe, with no token ==
-  exit code      : 0        <- upstream reports success
-  engine outcome : failed   <- what the user is told
-  reason         : [ERREUR] ENTSO-E: Token ENTSO-E manquant…
+== extract-entsoe, no token ==            == extract-rte 2019 ==
+  exit code : 0                             --> failed after 10m 43s
+  outcome   : failed                        reason: [ERREUR] water_reserves: HTTP 400
+  reason    : [ERREUR] Token manquant…
 ```
 
-An engine trusting `returncode` would have reported a failed ingest as a success, and the user
-would have discovered otherwise days later when a projection came back short.
+An engine trusting `returncode` would have called both successes.
 
-Every job declares its own failure markers. `weathergen simulate`'s missing-deltas line is
-among them — it is a **failure**, not a warning, because it produces a present-day cube
-labelled as the target year. A test asserts it appears in `failure_markers` and not in
-`warning_markers`.
+---
 
-Other things the engine encodes: progress reported only where a real
-`powersim_core.progress` line exists (a counter line yields no percentage rather than an
-invented one); logs scrubbed of stored credentials as they are written, because a log is the
-first thing a stuck user forwards; console scripts resolved inside the release environment
-rather than through PATH; one job at a time, because the stages share one database.
+## What it took to run one backtest
+
+The gate asks for a one-year backtest. Getting there needed **five prerequisites that
+nothing announced**, each found by hitting it:
+
+| # | missing | how it failed | now |
+|---|---|---|---|
+| 1 | French demand (RTE) | `no such column: conso_realised` | refused in 0.0 s, names RTE |
+| 2 | capacity / hydro / NTC | silent +22 €/MWh bias | refused, offers the ingest |
+| 3 | `dim_production_unit` | empty French fleet, no error | refused, offers `reconcile-units` |
+| 4 | `prod_wind_offshore` | crash 24 s in | refused, explains why it is absent |
+| 5 | REMIT outages | crash 1 m 53 s in | refused, offers `ingest-remit` |
+
+A user clicking "Back-test 2019" on a fresh install would have met these one at a time, each
+after a wait, each as a raw traceback.
+
+### Three had no shipped path at all
+
+`ingest_installed_capacity`, `ingest_hydro_storage` and `ingest_ntc` exist in
+`pricemodeling.entsoe.series` with documented rationales, and **nothing calls them**.
+`ingest_all` covers prices/load/generation/flows; `extract-entsoe` does FR prices only;
+`backfill_entsoe.py` calls the same four. Same story for the thirteen cluster zones: every
+ingest function defaults to the eight-zone footprint and no shipped script overrides it. The
+owner's database has all of it because those calls were made directly.
+
+`backfill-entsoe-extras` and `backfill-entsoe-clusters` now wrap those public functions the
+way the shipped script wraps the others. No upstream file is touched.
+
+### And a defect in the guard itself
+
+`JobEngine.run` accepted a `preflight` callable and **nothing ever passed one**.
+`validate_registry` checked that every declared check was implemented, so the registry looked
+sound while the checks never ran. `needs_credentials` had the identical defect — declared on
+nine jobs, read only by a JSON dump and a CLI listing. Both are enforced now.
+
+---
+
+## The run
+
+```
+backfill-entsoe 2019     28m 17s  1.86M rows     extract-rte 2019   10m 43s
+backfill-entsoe-clusters 27m 29s  21 zones       ingest-remit 2019  17m 04s
+build-master              1m 41s  217 columns    reconcile-units        12s
+
+dispatch-backtest 2019   20m 14s  succeeded  8,735 hours  13 zones
+```
+
+8,735 hours, matching the reference exactly, so no LP windows were silently dropped.
+
+---
+
+## Two corrections to my own claims
+
+**The footprint story was too neat.** I predicted that ingesting the thirteen cluster zones
+would converge DE_LU toward the reference. It moved 5.1 points of a 30-point gap. Adding the
+zones was right — NL appeared, correlations improved — but it was not the explanation I
+presented it as.
+
+**The comparison was invalid, in two ways.**
+
+`golden/baseline.json`, shipped inside tag v0.1.0, holds the reference numbers and carries a
+fingerprint no data change can produce:
+
+```
+golden  FR max = 110.000   BE max = 110.001
+mine    FR max =  92.542   hours at ~110: 0
+```
+
+110 €/MWh was the GB import tranche appended to the FR stack. In v0.1.0 that constant
+survives **only in a comment** (`windows.py:20`, "REMOVED when GB was promoted to a modelled
+zone"). Golden prices 10 zones; `config.yaml` declares 13. **The baseline is stale inside its
+own tag**, so `tools/golden.py check` should fail on unmodified code.
+
+More fundamentally: `apply_markup` is imported by `rolling/projection.py` and **not** by
+`rolling/backtest.py`. The backtest emits raw SMC; `obs_mean` is post-markup spot. The gap
+between them is the wedge the model exists to fit, not error — `DECISIONS.md` says so in the
+author's own words. **Every `baseload_err_pct` I reported was measuring the wrong thing.**
+
+---
+
+## Italy, and what read-only costs
+
+IT_SOUTH priced at 181 €/MWh against a market near 50, with 68 hours at value of lost load.
+Two causes, established by probing the live API rather than reasoning:
+
+* ENTSO-E publishes Italian installed capacity at **control-area level only** — `IT` returns
+  18 technologies and 94,373 MW; every bidding zone raises `NoMatchingDataError`. `ALL_ZONES`
+  could never fetch it. Now fetched under `IT`.
+* `IT_CALA` was carved out of `IT_SUD` after 2019. There is nothing to download, ever.
+
+The obvious repair was `DISPATCH_AREA_CAPACITY=1`, which allocates the country total across
+zones. `DECISIONS.md:985` stopped me: the author measured it and left it **off** — IT_NORTH
+2019 goes −2.1 → −13.7, 2022 −3.0 → −22.4. It would have made the tested year three times
+worse while looking like a fix. The data is ours to fetch; the switch is the author's to
+throw, and a test pins that we never set it.
+
+Upstream being read-only, the cluster is dropped in **config** instead. `Config.all_zones` is
+the keys of the `zones:` mapping, so an overlay without IT_SOUTH removes it from the LP, and
+the backtest's border set — the NTC table intersected with active zones — drops its couplings
+with it. The overlay lives outside the code tree, keeping the extracted release
+byte-identical to its archive, which forces every relative path in it to be rewritten
+absolute.
+
+### A test that was consistent with my belief and wrong about the world
+
+The first overlay attempt appended a second `-c`, on the reasoning that argparse keeps the
+last value. It does not work here: `-c` sits on the **top-level** parser, so the second one
+lands after the subcommand and is rejected outright. My test asserting `count("-c") == 2`
+passed while the real invocation failed. An argument that must keep its position has to be
+substituted, which is what `Job.defaults` now does.
 
 ---
 
 ## Freshness without the table scan
 
-`pricemodeling status` runs `SELECT COUNT(*)` over every table — a full scan of a 16.5 GB
-master, and prose to parse afterwards. `ingest_log` already holds the answer.
-
-Measured against the owner's real database:
-
-```
-described 183 sources, 98.0M rows in 0.015s
-
-Weather observations  Météo-France SYNOP  33.3M rows  to 2026-01     fetched 1 months ago  [ageing]  (5 missing)
-French detail         RTE                 31.2M rows  to 2027-01-01  fetched 1 months ago  [ageing]
-Prices                ENTSO-E day-ahead    1.1M rows  to 2026-01-01  fetched 19 days ago   [fresh]
-Generation            ENTSO-E             23.2M rows  to 2026-01-01  fetched 19 days ago   [fresh]
-GB market             Elexon               975k rows  to 2026-07-30  fetched 17 days ago   [fresh]
-```
-
-Fast enough to redraw freely, and it surfaced a real signal on its first run: five missing
-SYNOP chunks.
-
-Two deliberate choices. Coverage (`to …`) is parsed from the chunk key and shown **separately**
-from when the data was last fetched, because those are different questions and conflating them
-hides gaps. And the staleness thresholds are loose — three weeks reads as fresh — because this
-model runs on years of history, and colouring normal data as a problem trains people to ignore
-the colour that matters.
-
-Everything opens the database read-only with `query_only`, since a job may be writing and a
-dashboard has no business taking a write lock on 16.5 GB of someone's work.
+`pricemodeling status` counts every row of every table. `ingest_log` answers the same
+question: **183 sources in 0.015 s** against the owner's real database. Coverage and
+last-fetched are shown separately, because conflating them hides gaps, and the thresholds are
+loose because colouring normal data as a problem trains people to ignore the colour that
+matters.
 
 ---
 
 ## Studio
 
-Against the live installation:
+The gate says the backtest must run **from the window**. Studio had exactly one action —
+"Check the database" — so it could not, and I had only ever driven `JobEngine` directly.
+There is now a year selector and a **Back-test that year** button.
 
-```
-Dandelion Studio · Model release v0.1.0
-Before you can run a projection
-  The ENTSO-E token is not confirmed - without it there is no price or load history…
-Data     The database exists but is empty. That is what a fresh install looks like.
-Accounts RTE / ENTSO-E / Copernicus - not set up
-Disk     Data 76 KB · Program 940 MB · German registry 7.4 GB · 69.7 GB free
-```
-
-Then **Check the database** ran a real job through the engine and reported
-`status: finished in 1s`.
+Refusals get their own card rather than a line in the history list: a refusal is not a
+failure, nothing ran, and it is the one outcome that names its own fix. Today produced five.
 
 ### A bug only running it would find
 
-The first click ran the job — a log file proved it — and the screen did not change. The cause
-was mine: `_start()` re-rendered the whole page, which left the *previous* activity card's
-timer alive and repainting into containers that no longer existed. Every click added another.
-
-The activity card now owns one timer and exposes its own repaint, so a click updates that card
-alone. Unit tests do not reach this class of defect; opening the page does.
-
----
-
-## Correction, 2026-08-24: the token did not unblock the backtest
-
-This report said the ENTSO-E token "unblocks the backtest, which in turn unblocks the
-cancellation drill." Half of that was right.
-
-The token arrived. The cancellation drill ran on a real upstream job and passed. The
-backtest did not, and could not have — I had not checked what it reads.
-
-`backtest` opens the year with `load_fr_netload`, which reads `conso_realised` and the
-`prod_*` columns from `master_hourly`. That table is built from **RTE**, and the module
-docstring says the FR leg works "without any ENTSO-E dependency". The ENTSO-E fallback in
-`build_master.py:84` is generation-only — every key is a `prod_*` column — because the two
-sources disagree on consumption by construction (`build_master.py:81`).
-
-Measured rather than argued. 2019 ingested in full, then the master rebuilt:
-
-```
-backfill-entsoe 2019   succeeded in 28m 17s
-  prices    70,063     load   131,353     gen  1,361,139     flows  297,838
-
-build-master           succeeded in 1m 15s
-  master_hourly columns: ts_utc, ts_local, utc_offset_h,
-                         price_da_be … price_da_pt        <- prices, and nothing else
-```
-
-No `conso_realised`, and no `prod_*` either: `build_master.py:120` skips any column not
-already in the frame, so the ENTSO-E fallback **repairs** RTE columns and cannot bootstrap
-them. With no RTE at all it is a no-op.
-
-**An ENTSO-E token does not unblock a backtest. RTE credentials do.**
-
-### What was built in response
-
-`dispatch-backtest` had no preflight, so it would have constructed the config, the
-workbook, the commodity model and every neighbour stack before dying inside pandas.
-
-```
-outcome : refused | did not start
-reason  : The master table has no French demand column. It was built from ENTSO-E data
-          alone, which carries prices and generation but not consumption, so there is
-          nothing for a backtest to read. French demand comes from RTE.
-```
-
-0.0 s, and it names the account that fills the gap. `check_fr_history` distinguishes four
-states that have four different fixes: no database, no master table, a master built without
-RTE, and a year with real gaps in it.
-
-The tolerance for gaps is **absolute, not proportional**. My first version allowed 1%, which
-is 88 hours — enough to accept a missing 29 February as a complete year. A test now pins
-that.
-
-A second gap this exposed: `JobEngine.run` took a `preflight` callable, and nothing ever
-passed one. `validate_registry` checked that every declared check was implemented, so the
-registry looked sound while the checks never ran — the exact fail-open the field exists to
-prevent. `declared_preflight` now wires them in by default.
-
-301 tests.
-
----
-
-## Cancellation, on a real upstream job
-
-```
->>> running, process tree = 2 -> [19556, 2024]
->>> cancelling
-job_object_used : True
-escalated       : False
-survivors       : NONE
-outcome         : cancelled     summary : cancelled after 24s
-independent orphan check: NONE
-```
-
-The gate row is met: cancelled mid-run, no orphans, verified by a separate process listing,
-and a coherent job state.
-
-`escalated: False` is worth reading carefully. It means the job object alone sufficed **for
-this shape** — `backfill_entsoe.py` is a parent and one child. It does not settle the
-grandchild question above, because this job has no worker pool. `run_montecarlo.py` does,
-and that is Phase 6.
-
+The first click ran the job and the screen did not change. `_start()` re-rendered the whole
+page, leaving the previous card's timer alive and repainting into containers that no longer
+existed. The card now owns one timer. Unit tests do not reach that; opening the page does.
+Its *routing* is now tested — ten tests covering refusal-versus-history and the
+junction-safe disk walk.
 
 ---
 
@@ -243,30 +219,25 @@ and that is Phase 6.
 | criterion | status |
 |---|---|
 | Job engine with env injection, log persistence, one-at-a-time | ✅ |
-| Cancellation leaves no orphans | ✅ verified on real process trees |
+| Cancellation leaves no orphans | ✅ verified on a real upstream job |
 | `status` run end to end from the window | ✅ |
 | Home dashboard with per-source freshness | ✅ 183 sources, 0.015 s |
-| **A one-year backtest from the GUI** | ⛔ needs RTE credentials, not the ENTSO-E token |
-| **Cancel mid-run, verified by process listing** | ✅ on a real 28-minute upstream job |
-| **Clean Win 11 VM** | ⛔ still outstanding from Phase 2 |
-
-The two blocked rows are the same missing thing: data. A backtest needs history, and history
-needs the ENTSO-E token. The cancellation row is partly covered — the mechanism is tested
-against real `ProcessPoolExecutor` trees — but not yet through a job long enough to interrupt
-from the window, which the backtest would provide.
+| **A one-year backtest from the GUI** | ✅ ran; ⚠️ driven through `JobEngine`, not clicked |
+| **Cancel mid-run, verified by process listing** | ✅ shallow tree; grandchildren still open |
+| **Clean Win 11 VM** | ⛔ outstanding since Phase 2 |
 
 ---
 
 ## What I need from you
 
-1. ~~The ENTSO-E token.~~ Arrived, stored in Credential Manager, tested against the live API
-   (97 French price hours), and used to ingest 2019 in full. It unblocked the cancellation
-   drill. It did **not** unblock the backtest — see the correction above.
-2. **RTE credentials** — the OAuth client id and secret from RTE's data portal. This is the
-   real backtest blocker. With them: `extract-rte 2019`, `build-master`, then the backtest.
-3. **A clean Windows VM**, still, and now with a second question attached: whether
-   `escalated` comes back `False` there. That single value tells us whether the job object
-   behaves as the plan assumed on a normal machine.
-4. Nothing else is blocking. Phase 4 (data refresh and model refits) can begin — its pages can
-   be built and their job definitions exercised against an empty database, the same way Phase 3
-   was.
+1. **`golden/baseline.json` is stale in v0.1.0.** Re-capturing it is cheap and would give the
+   product a real accuracy target. Until then there is nothing valid to compare against:
+   model-versus-observed measures the markup wedge, and model-versus-golden compares two
+   different builds.
+2. **A clean Windows VM**, and now with a second question: whether `escalated` comes back
+   `False` there for a *deep* tree. The release environment's `python.exe` is itself a
+   launcher shim, so real jobs run three processes deep — a ready-made test case.
+3. **Whether the 13-zone config should refuse pre-2024 years outright.** IT_SOUTH degrades
+   away as of today, per your call, but the config still declares zones whose data begins in
+   2024.
+4. Nothing else is blocking. Phase 4 can begin.
