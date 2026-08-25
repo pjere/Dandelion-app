@@ -209,3 +209,46 @@ def test_there_is_no_button_that_runs_everything():
     assert labels, "no buttons found - the pattern has drifted from the code"
     for label in labels:
         assert label.lower() in ("run", "refit"), f"a button labelled {label!r}"
+
+
+# ------------------------------------------------------- the elapsed counter
+
+def test_a_silent_job_would_freeze_the_card_without_the_elapsed_text():
+    """The defect this guards. `TaskView.apply_all` returns False when a job emits nothing,
+    and `engine.progress` stays None when upstream prints no progress line. Both are true
+    of ingest-remit for seventeen minutes, so `changed` never becomes True and paint() is
+    never called: the card sits on "Working..." for the whole run, indistinguishable from a
+    hang."""
+    from dandelion.background import TaskView
+
+    view = TaskView()
+    assert view.apply_all([]) is False, "no output means no repaint, on its own"
+
+
+def test_the_elapsed_sentence_changes_every_second_which_throttles_repaint():
+    """Repainting on every 0.4s tick would be wasteful; repainting when the SENTENCE
+    changes gives one repaint a second for free."""
+    from dandelion import expectations
+
+    a = expectations.during("ingest-remit", 61.0)
+    b = expectations.during("ingest-remit", 61.4)
+    c = expectations.during("ingest-remit", 62.0)
+    assert a == b, "sub-second changes must not repaint"
+    assert a != c, "but each new second must"
+
+
+def test_a_job_with_real_progress_keeps_its_own_eta():
+    """A measured typical must never overwrite an ETA upstream actually reported."""
+    from dandelion import expectations
+
+    assert expectations.during("dispatch-backtest", 500, has_real_progress=True) == ""
+
+
+def test_the_start_time_is_recorded_when_a_job_starts(desk):
+    desk.engine = FakeEngine(make_result(outcome="succeeded", duration_s=1))
+    desk.started_at = 0.0
+    desk.running_job = ""
+    desk._start("status")
+    drain(desk)
+    assert desk.running_job == "status"
+    assert desk.started_at > 0.0, "without this the card cannot say how long it has been"

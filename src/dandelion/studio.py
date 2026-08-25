@@ -11,13 +11,14 @@ to discover it hours into a run.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from nicegui import ui  # noqa: E402
 
-from dandelion import branding, credentials, freshness, pages  # noqa: E402
+from dandelion import branding, credentials, expectations, freshness, pages  # noqa: E402
 from dandelion.background import BackgroundTask, TaskView  # noqa: E402
 from dandelion.jobs import JobEngine, summarise  # noqa: E402
 from dandelion.manifest import InstallManifest  # noqa: E402
@@ -73,6 +74,10 @@ class Studio:
         self.refusal: tuple[str, str] | None = None
         self.backtest_year: int = BACKTEST_YEARS[0]
         self.data_year: int = pages.YEARS[0]
+        #: When the running job started, and which one, so the activity card can say how
+        #: long it has been going. `JobResult.duration_s` only exists once it is over.
+        self.started_at: float = 0.0
+        self.running_job: str = ""
         self.tab: str = "Home"
         self.journal = self.engine.journal
         #: Set by the activity card so a click can repaint just that card. Re-rendering the
@@ -283,10 +288,16 @@ class Studio:
                         with ui.row().classes("items-center w-full"):
                             ui.spinner(size="sm")
                             ui.label(self.view.current or "Working…").classes("text-body2")
-                        if self.view.fraction is not None:
-                            ui.linear_progress(value=self.view.fraction).classes("w-full")
-                        else:
-                            ui.linear_progress().props("indeterminate").classes("w-full")
+                        # show_value=False on both: NiceGUI prints the raw value inside
+                        # the bar, which on an INDETERMINATE bar is a meaningless "0"
+                        # floating in the middle of it, and on a determinate one is "0.42"
+                        # next to a label already saying 42%.
+                        bar = (ui.linear_progress(value=self.view.fraction,
+                                                  show_value=False)
+                               if self.view.fraction is not None
+                               else ui.linear_progress(show_value=False)
+                               .props("indeterminate"))
+                        bar.classes("w-full")
                         for line in self.engine.tail[-8:]:
                             ui.label(line).classes("text-caption text-grey-7") \
                                 .style("font-family:Consolas,monospace")
@@ -325,6 +336,17 @@ class Studio:
                                             else ""))
                     self.view.fraction = fraction
                     changed = True
+                elif self.task.running and self.running_job:
+                    # Without this a silent job never repaints: `changed` stays False for
+                    # its whole run and the card sits on "Working…". `ingest-remit` printed
+                    # nothing for seventeen minutes, which is indistinguishable from a hang
+                    # — and the reasonable response to a hang is to kill it. The sentence
+                    # changes once a second, which is what throttles the repaint.
+                    note = expectations.during(self.running_job,
+                                               time.monotonic() - self.started_at)
+                    if note != self.view.current:
+                        self.view.current = note
+                        changed = True
                 if changed or self.task.finished:
                     paint()
 
@@ -338,6 +360,8 @@ class Studio:
         self.view = TaskView()
         task = BackgroundTask(job_id)
         self.task = task
+        self.started_at = time.monotonic()
+        self.running_job = job_id
 
         def work():
             result = self.engine.run(job_id, params)
