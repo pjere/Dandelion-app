@@ -153,10 +153,8 @@ def test_sizes_read_naturally(n, text):
 def test_the_data_page_groups_every_ingest_job_exactly_once():
     """A job in no group is unreachable from the window; a job in two is two buttons doing
     the same thing."""
-    from dandelion.pages import DATA_GROUPS
+    from dandelion.pages import DATA_GROUPS, NOT_OFFERED
     from drivers.inventory import JOBS, Stage
-
-    from dandelion.pages import NOT_OFFERED
 
     grouped = [j for _, _, ids in DATA_GROUPS for j in ids]
     assert len(grouped) == len(set(grouped)), "a job appears in two groups"
@@ -199,13 +197,12 @@ def test_the_models_page_covers_every_calibration_and_projection():
 def test_there_is_no_button_that_runs_everything():
     """Deliberate: the full chain measured about ninety minutes of somebody else's API
     quota on this machine, and one click hiding that gets pressed at five o'clock."""
-    from pathlib import Path
-
-    from dandelion import pages
-
     # Check the BUTTON LABELS, not the prose. A first version grepped the whole file and
     # was tripped by the docstring explaining why no such button exists.
     import re
+    from pathlib import Path
+
+    from dandelion import pages
 
     source = Path(pages.__file__).read_text(encoding="utf-8")
     labels = re.findall(r'ui\.button\(\s*"([^"]+)"', source)
