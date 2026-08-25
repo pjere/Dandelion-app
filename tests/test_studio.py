@@ -146,3 +146,69 @@ def test_a_missing_directory_is_zero_not_an_error(tmp_path):
                                     (5 * 1024**3, "5.0 GB")])
 def test_sizes_read_naturally(n, text):
     assert studio.human_bytes(n) == text
+
+
+# ------------------------------------------------------------------ the pages
+
+def test_the_data_page_groups_every_ingest_job_exactly_once():
+    """A job in no group is unreachable from the window; a job in two is two buttons doing
+    the same thing."""
+    from dandelion.pages import DATA_GROUPS
+    from drivers.inventory import JOBS, Stage
+
+    from dandelion.pages import NOT_OFFERED
+
+    grouped = [j for _, _, ids in DATA_GROUPS for j in ids]
+    assert len(grouped) == len(set(grouped)), "a job appears in two groups"
+    data_jobs = {j.id for j in JOBS if j.stage is Stage.DATA}
+    missing = data_jobs - set(grouped) - set(NOT_OFFERED)
+    assert not missing, f"unreachable from the Data page: {sorted(missing)}"
+    assert not (set(NOT_OFFERED) & set(grouped)), "offered and excluded at once"
+
+
+def test_every_grouped_job_exists():
+    from dandelion.pages import DATA_GROUPS
+    from drivers.inventory import job as find_job
+
+    for _, _, ids in DATA_GROUPS:
+        for job_id in ids:
+            find_job(job_id)
+
+
+def test_derived_steps_come_after_the_downloads_that_feed_them():
+    """`reconcile-units` and `build-master` read what the ingests wrote, so a page that
+    lists them first teaches the wrong order."""
+    from dandelion.pages import DATA_GROUPS
+
+    order = [j for _, _, ids in DATA_GROUPS for j in ids]
+    for derived in ("reconcile-units", "build-master", "qc-sources"):
+        assert order.index(derived) > order.index("extract-rte"), derived
+
+
+def test_the_models_page_covers_every_calibration_and_projection():
+    from dandelion.staleness import MODEL_INPUTS
+    from drivers.inventory import JOBS, Stage
+
+    model_jobs = {j.id for j in JOBS if j.stage is Stage.MODELS}
+    projections = {j for j in model_jobs if j.endswith("-project")
+                   or j == "weathergen-simulate"}
+    assert set(MODEL_INPUTS) <= model_jobs
+    assert projections <= model_jobs
+
+
+def test_there_is_no_button_that_runs_everything():
+    """Deliberate: the full chain measured about ninety minutes of somebody else's API
+    quota on this machine, and one click hiding that gets pressed at five o'clock."""
+    from pathlib import Path
+
+    from dandelion import pages
+
+    # Check the BUTTON LABELS, not the prose. A first version grepped the whole file and
+    # was tripped by the docstring explaining why no such button exists.
+    import re
+
+    source = Path(pages.__file__).read_text(encoding="utf-8")
+    labels = re.findall(r'ui\.button\(\s*"([^"]+)"', source)
+    assert labels, "no buttons found - the pattern has drifted from the code"
+    for label in labels:
+        assert label.lower() in ("run", "refit"), f"a button labelled {label!r}"

@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from nicegui import ui  # noqa: E402
 
-from dandelion import branding, credentials, freshness  # noqa: E402
+from dandelion import branding, credentials, freshness, pages  # noqa: E402
 from dandelion.background import BackgroundTask, TaskView  # noqa: E402
 from dandelion.jobs import JobEngine, summarise  # noqa: E402
 from dandelion.manifest import InstallManifest  # noqa: E402
@@ -72,6 +72,9 @@ class Studio:
         #: (job_id, reason) when the last attempt was refused before it started.
         self.refusal: tuple[str, str] | None = None
         self.backtest_year: int = BACKTEST_YEARS[0]
+        self.data_year: int = pages.YEARS[0]
+        self.tab: str = "Home"
+        self.journal = self.engine.journal
         #: Set by the activity card so a click can repaint just that card. Re-rendering the
         #: whole page from a handler would leave the previous card's timer alive, repainting
         #: into containers that no longer exist.
@@ -83,20 +86,64 @@ class Studio:
             self._picture = freshness.describe(self.install.data_dir / "pricemodeling.db")
         return self._picture
 
+    @property
+    def fits_shipped(self) -> bool:
+        """The release brought its own fitted models, so nothing here was never fitted."""
+        return getattr(self.manifest.fits, "source", "none") == "downloaded"
+
+    def start(self, job_id: str, **params) -> None:
+        """Public entry for the pages. Same path as any other click."""
+        self._start(job_id, **params)
+
     # ------------------------------------------------------------------ chrome
     def render(self) -> None:
         assert self.body is not None
         self.body.clear()
+        running = self.task is not None and self.task.running
         with self.body:
             self._header()
-            self._gaps()
-            with ui.row().classes("w-full items-start no-wrap gap-4"):
-                with ui.column().classes("flex-grow"):
-                    self._data_card()
-                with ui.column().classes("w-80"):
-                    self._credentials_card()
-                    self._disk_card()
+            # Plain containers whose visibility we set ourselves, rather than
+            # `ui.tab_panels`. Three attempts at the Quasar carousel all left the strip
+            # highlighting the new tab while `elementFromPoint` still painted the old
+            # panel: binding the tabs alone parked the panels, binding both ends made the
+            # two bindings fight, and the documented tabs-drives-panels linkage did not
+            # take either.
+            #
+            # Toggling visibility also avoids re-rendering the page from a handler, which
+            # is what left a previous activity card's timer alive repainting detached
+            # containers in Phase 3. Nothing is rebuilt here; three containers exist and
+            # exactly one is shown.
+            panels: dict[str, ui.column] = {}
+
+            def show(name: str) -> None:
+                self.tab = name
+                for label, container in panels.items():
+                    container.set_visibility(label == name)
+
+            with ui.tabs().classes("w-full").on_value_change(
+                    lambda e: show(e.value)) as tabs:
+                for name in ("Home", "Data", "Models"):
+                    ui.tab(name)
+            tabs.value = self.tab
+
+            for name, build in (("Home", self._home),
+                                ("Data", lambda: pages.data_page(self, running)),
+                                ("Models", lambda: pages.models_page(self, running))):
+                with ui.column().classes("w-full q-pt-md") as panel:
+                    build()
+                panels[name] = panel
+            show(self.tab)
+
             self._activity_card()
+
+    def _home(self) -> None:
+        self._gaps()
+        with ui.row().classes("w-full items-start no-wrap gap-4"):
+            with ui.column().classes("flex-grow"):
+                self._data_card()
+            with ui.column().classes("w-80"):
+                self._credentials_card()
+                self._disk_card()
 
     def _header(self) -> None:
         with ui.row().classes("w-full items-center justify-between q-mb-md"):
