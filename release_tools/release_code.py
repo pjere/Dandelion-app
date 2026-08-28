@@ -99,12 +99,26 @@ SDIST_ALLOWLIST = {
     ),
 }
 
-#: Upstream tests that fail in a clean release environment because they need the BUILT
-#: DATABASE, not just the code. A freshly extracted release has no pricemodeling.db, so this
-#: says nothing about the release; what matters is that no OTHER test fails.
+#: Upstream tests that fail in a clean release environment because they need a GENERATED
+#: ARTIFACT — the built database, or a simulated weather cube — and not just the code. A
+#: freshly extracted release has neither, so their failure says nothing about the release;
+#: what matters is that no OTHER test fails.
+#:
+#: Each entry is reviewed against the actual failure before it is added. An entry here is a
+#: claim that the test cannot pass without data, NOT a way to quieten a real regression.
 DATA_DEPENDENT_TESTS = {
     "dispatch_model:tests/test_structural.py::test_neighbour_thermal_blocks_carry_must_run_floor":
         "builds neighbour thermal blocks from the built database",
+    # v0.2.0. Fails with `FileNotFoundError: weathergen cube not found:
+    # ../weathergen/output/simulation.nc` — a SIMULATED cube, which is output rather than
+    # source and so cannot exist in a fresh clone. Verified it is not a regression: the
+    # raise happens inside `zone_map` on the test's first line, and that line's assertion
+    # is `... in ({},) or True`, which cannot fail. The rest of the test is pure and passes.
+    #
+    # Worth fixing upstream rather than tolerating here: guarding that call with
+    # `pytest.importorskip`-style existence check would let it pass everywhere.
+    "dispatch_model:tests/test_neighbour_own_weather.py::test_france_only_cube_still_works":
+        "calls zone_map on ../weathergen/output/simulation.nc, a generated cube",
 }
 
 #: These SKIP cleanly when there is no database at all, but FAIL with "no such table" when an

@@ -63,12 +63,31 @@ def test_parse_pytest_failures_ignores_ordinary_output():
     assert release_code.parse_pytest_failures("284 passed, 12 skipped in 9.03s\n") == set()
 
 
-def test_only_the_genuinely_failing_test_is_allowlisted():
-    """The other eleven skip on a clean tree; allowlisting them would hide regressions."""
-    assert len(release_code.DATA_DEPENDENT_TESTS) == 1
-    key = next(iter(release_code.DATA_DEPENDENT_TESTS))
-    assert key.startswith("dispatch_model:")
-    assert "test_neighbour_thermal_blocks_carry_must_run_floor" in key
+#: Every allowlisted test, with the generated artifact it needs. Pinned EXACTLY: an
+#: allowlist that grows without review stops being a gate and becomes a mute button. Each
+#: entry was reproduced against the extracted release before it was added.
+ALLOWLISTED = {
+    "dispatch_model:tests/test_structural.py"
+    "::test_neighbour_thermal_blocks_carry_must_run_floor": "the built database",
+    "dispatch_model:tests/test_neighbour_own_weather.py"
+    "::test_france_only_cube_still_works": "a simulated weather cube",
+}
+
+
+def test_the_allowlist_is_exactly_what_was_reviewed():
+    """The other tests skip cleanly on a clean tree; allowlisting them would hide
+    regressions. Adding an entry here should require reading the failure first — which is
+    the point of pinning the whole set rather than only its size."""
+    assert set(release_code.DATA_DEPENDENT_TESTS) == set(ALLOWLISTED)
+
+
+def test_every_allowlisted_entry_names_the_artifact_it_needs():
+    """A bare test name is not a justification. The reason has to say what is missing, so
+    the next person can tell a data dependency from a quietened regression."""
+    for key, reason in release_code.DATA_DEPENDENT_TESTS.items():
+        assert key.startswith("dispatch_model:") and "::" in key
+        assert len(reason) > 20, f"{key} has no real reason"
+        assert any(word in reason for word in ("database", "cube")), reason
 
 
 def test_stale_db_set_and_allowlist_do_not_overlap():
