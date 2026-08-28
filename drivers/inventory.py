@@ -53,7 +53,8 @@ PROGRESS_LABELS = {
     "availability draws": "availability_model/.../projection/engine.py:159",
     "backtest {year}": "dispatch_model/.../rolling/backtest.py:365",
     "{year} windows": "dispatch_model/.../rolling/projection.py:435 (inner loop)",
-    "projection {start}-{end}": "dispatch_model/scripts/run_projection_20y.py:76 (outer loop)",
+    "projection {span}": "dispatch_model/scripts/run_projection_20y.py:78 (outer loop). "
+                         "The span is a range, or the literal --years list.",
     "deliverables": "dispatch_model/scripts/build_projection_deliverables.py:275",
     "monte-carlo {n} draws": "dispatch_model/scripts/run_montecarlo.py:136",
 }
@@ -636,12 +637,27 @@ JOBS: tuple[Job, ...] = (
         id="projection-20y", title="20-year projection",
         kind=Kind.SCRIPT, stage=Stage.PROJECTION,
         argv=("{python}", "-u", "-X", "utf8", "-W", "ignore", "scripts/run_projection_20y.py"),
+        #: v0.2.0 added `--years`: an explicit comma-separated list instead of a contiguous
+        #: range. One preload serves them all, which is what makes a sparse comparison
+        #: affordable when the preload costs more than a solved year. Omitted, the horizon
+        #: still comes from config.yaml.
+        optional_argv=(("--years", "{years}"),),
         cwd="dispatch_model",
-        progress_label="projection {start}-{end}",
+        #: The span is whatever was asked for: "2030-2050" from the config horizon, or the
+        #: literal "2030,2035,2040,2046" when --years is given (run_projection_20y.py builds
+        #: it as `_span = args.years if args.years else f"{start}-{end}"`). Parsing does not
+        #: depend on this — PROGRESS_RE reads whatever sits in the brackets — so it is a
+        #: description, and it has to stay a true one.
+        progress_label="projection {span}",
         resumable=True,
         preflight=("markup-model-present",),
-        notes="Horizon comes from config.yaml, not from a flag.",
-        upstream_ref="dispatch_model/scripts/run_projection_20y.py:76",
+        notes=(
+            "Horizon comes from config.yaml unless --years narrows it. The output "
+            "directory does NOT: --out defaults to the cwd-relative 'scratchpad/proj20y' "
+            "and this job passes no override, so every run shares one directory and "
+            "resumes on file existence alone."
+        ),
+        upstream_ref="dispatch_model/scripts/run_projection_20y.py:78",
     ),
     Job(
         id="projection-deliverables", title="Build projection deliverables",

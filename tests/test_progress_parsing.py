@@ -81,9 +81,18 @@ def test_ordinary_output_is_not_mistaken_for_progress():
 # Live check — only when an upstream release is importable in the running interpreter.
 # --------------------------------------------------------------------------------------
 
-progress_mod = pytest.importorskip(
-    "powersim_core.progress", reason="no upstream release installed in this interpreter"
-)
+def _progress_module():
+    """The upstream module, or skip THIS test.
+
+    This was `pytest.importorskip(...)` at module level, which raises at IMPORT time and so
+    abandoned the whole file — including the ten pure-regex tests above, which need no
+    upstream at all. The suite reported "1 skipped" and that single line was every test in
+    here. A gate that silently disables its own file is worse than no gate.
+    """
+    return pytest.importorskip(
+        "powersim_core.progress",
+        reason="no upstream release installed in this interpreter",
+    )
 
 
 class _Piped:
@@ -110,7 +119,7 @@ class _Piped:
 
 def test_live_bar_output_matches_our_regex():
     out = _Piped()
-    with progress_mod.Progress(3, "projection 2027-2046", stream=out, min_interval=0) as p:
+    with _progress_module().Progress(3, "projection 2027-2046", stream=out, min_interval=0) as p:
         for i in range(3):
             p.update(note=f"{2027 + i} done")
     assert out.lines, "upstream emitted nothing under a pipe"
@@ -120,7 +129,7 @@ def test_live_bar_output_matches_our_regex():
 
 def test_live_counter_output_matches_our_regex():
     out = _Piped()
-    with progress_mod.Progress(0, "ingest", stream=out, min_interval=0) as p:
+    with _progress_module().Progress(0, "ingest", stream=out, min_interval=0) as p:
         for _ in range(3):
             p.update()
     assert out.lines
@@ -131,7 +140,31 @@ def test_live_counter_output_matches_our_regex():
 def test_live_output_carries_no_carriage_returns_under_a_pipe():
     """A \\r bar would make one unreadable mega-line in the persisted job log."""
     out = _Piped()
-    with progress_mod.Progress(2, "backtest 2019", stream=out, min_interval=0) as p:
+    with _progress_module().Progress(2, "backtest 2019", stream=out, min_interval=0) as p:
         p.update()
         p.update()
     assert not any("\r" in line for line in out.lines)
+
+
+# ------------------------------------------------------- the registry's own claims
+
+def test_every_declared_progress_label_is_documented():
+    """`progress_label` has no runtime reader — `parse_progress` takes the label from the
+    line itself — so it is a description of upstream, and nothing was keeping it true. It
+    drifted the moment v0.2.0 changed the 20-year projection's label from a fixed
+    "{start}-{end}" to a span that is either a range or an explicit --years list."""
+    from drivers.inventory import JOBS, PROGRESS_LABELS
+
+    declared = {j.progress_label for j in JOBS if j.progress_label}
+    documented = set(PROGRESS_LABELS)
+    undocumented = declared - documented
+    assert not undocumented, (
+        f"declared on a job but not in PROGRESS_LABELS: {sorted(undocumented)}")
+
+
+def test_every_documented_label_cites_where_it_comes_from():
+    """A label with no file:line cannot be re-verified when the next tag lands."""
+    from drivers.inventory import PROGRESS_LABELS
+
+    for label, source in PROGRESS_LABELS.items():
+        assert ".py:" in source, f"{label!r} cites no source line"
