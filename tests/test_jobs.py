@@ -363,3 +363,46 @@ def test_a_job_without_switches_leaves_the_variable_alone(install, monkeypatch):
     monkeypatch.delenv("POWERSIM_RES_OFFSHORE_LOSSES", raising=False)
     env = _captured_env(install, monkeypatch, "status", {})
     assert "POWERSIM_RES_OFFSHORE_LOSSES" not in env
+
+
+# ------------------------------------------------------ the silent weather fallback
+
+#: Verbatim from the v0.3.0 release: rolling/projection.py:873-875 and
+#: scripts/run_projection_20y.py:166-167. Both catch the weather provider's exception, print
+#: this, and carry on to exit 0 on reshaped reference-year weather.
+FALLBACK_LINES = {
+    "dispatch-run": "  [projection] weather-coherent engines unavailable (FileNotFoundError: "
+                    "weathergen cube not found: ../weathergen/output/simulation.nc); falling "
+                    "back to reshaped reference-year 2019 weather",
+    "projection-20y": "[20y] 2031: weather-coherent engines unavailable (FileNotFoundError: "
+                      "weathergen cube not found); falling back to reshaped reference-year "
+                      "weather",
+}
+
+
+@pytest.mark.parametrize("job_id", sorted(FALLBACK_LINES))
+def test_a_projection_on_fallback_weather_does_not_read_as_a_clean_success(
+        install, monkeypatch, job_id):
+    """Every remaining year is built on reshaped 2019 weather, apply_offshore is never
+    reached, and the projection comes out complete and plausible at exit 0. Without a marker
+    Studio would report it exactly like a weather-coherent run."""
+    import dandelion.jobs as jobs
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            self.stdout = iter([FALLBACK_LINES[job_id] + "\n", "done\n"])
+            self.returncode, self.pid = 0, 0
+
+        def wait(self, *a, **k):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", FakePopen)
+    params = {"year": 2031, "config": "config.yaml"} if job_id == "dispatch-run" else {}
+    result = jobs.JobEngine(install, "v0.3.0").run(job_id, params,
+                                                   preflight=lambda _: None)
+    assert result.outcome == "succeeded", "a warning, not a failure: upstream announces it"
+    assert result.warning_lines, "but it must be surfaced"
+    assert "warnings" in jobs.summarise(result)

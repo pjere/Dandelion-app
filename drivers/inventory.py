@@ -251,6 +251,20 @@ ENTSOE_CLUSTERS_RUNNER = (
 OFFSHORE_LOSSES: tuple[tuple[str, str], ...] = (("POWERSIM_RES_OFFSHORE_LOSSES", "1"),)
 
 
+# The weather-coherent engine failing is announced in one line and then ignored.
+#
+# rolling/projection.py:871-878 and scripts/run_projection_20y.py:164-169 both wrap the weather
+# provider in `except Exception`, print "weather-coherent engines unavailable ... falling back to
+# reshaped reference-year weather", and carry on to exit 0. Every remaining year is then built on
+# reshaped reference-year weather, CalibratedRes.apply_offshore is never reached (so
+# OFFSHORE_LOSSES has nothing to act on), and the projection comes out complete and plausible.
+#
+# A WARNING rather than a failure: upstream treats this as a deliberate, announced fallback, so
+# the run is degraded rather than mislabelled -- unlike the CMIP6 line, where the cube claims a
+# trend it does not carry. But it must not read as a clean success.
+WEATHER_FALLBACK = (r"weather-coherent engines unavailable",)
+
+
 ERREUR = (r"^\[ERREUR\]",)
 
 
@@ -650,6 +664,7 @@ JOBS: tuple[Job, ...] = (
     # ---------------------------------------------------------------- projection
     Job(
         id="dispatch-run", title="Single-year projection",
+        warning_markers=WEATHER_FALLBACK,
         env=OFFSHORE_LOSSES,
         kind=Kind.CONSOLE, stage=Stage.PROJECTION,
         argv=("dispatch-model", "-c", "{config}", "run", "--year", "{year}"),
@@ -665,6 +680,7 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="projection-20y", title="20-year projection",
+        warning_markers=WEATHER_FALLBACK,
         env=OFFSHORE_LOSSES,
         kind=Kind.SCRIPT, stage=Stage.PROJECTION,
         argv=("{python}", "-u", "-X", "utf8", "-W", "ignore", "scripts/run_projection_20y.py"),
