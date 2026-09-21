@@ -29,7 +29,7 @@ STATE_FILE = "wizard_state.json"
 #: The release this build of the installer knows how to fetch. Pinned rather than "latest":
 #: an installer and a code release are qualified together, and silently picking up a newer
 #: tag would install a combination nobody tested.
-DEFAULT_TAG = "v0.1.0"
+DEFAULT_TAG = "v0.3.0"
 
 PAGES = ("welcome", "locations", "runtime", "credentials", "models", "data", "finish")
 PAGE_TITLES = {
