@@ -318,3 +318,48 @@ def test_every_run_is_journalled_including_a_refusal(install, monkeypatch):
     assert len(recorded) == 1
     assert recorded[0].job_id == "backfill-entsoe" and recorded[0].outcome == "refused"
     assert recorded[0].params == {"years": 2019}
+
+
+# ------------------------------------------------------------- engine switches
+
+def _captured_env(install, monkeypatch, job_id, params):
+    import dandelion.jobs as jobs
+
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            captured.update(kwargs.get("env") or {})
+            self.stdout, self.returncode, self.pid = iter(()), 0, 0
+
+        def wait(self, *a, **k):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", FakePopen)
+    jobs.JobEngine(install, "v0.3.0").run(job_id, params, preflight=lambda _: None)
+    return captured
+
+
+def test_a_declared_switch_reaches_the_process(install, monkeypatch):
+    """`env` would be the fifth field declared and never read if the engine ignored it: the
+    registry would say the offshore losses are on while every projection ran without them."""
+    env = _captured_env(install, monkeypatch, "res-project", {})
+    assert env.get("POWERSIM_RES_OFFSHORE_LOSSES") == "1"
+
+
+def test_a_switch_beats_a_stray_value_in_the_users_shell(install, monkeypatch):
+    """Applied last on purpose: a POWERSIM_RES_OFFSHORE_LOSSES=0 left in somebody's shell must
+    not quietly turn the reference model's offshore conversion back into the capped one."""
+    monkeypatch.setenv("POWERSIM_RES_OFFSHORE_LOSSES", "0")
+    env = _captured_env(install, monkeypatch, "res-project", {})
+    assert env["POWERSIM_RES_OFFSHORE_LOSSES"] == "1"
+
+
+def test_a_job_without_switches_leaves_the_variable_alone(install, monkeypatch):
+    """A job that declares nothing passes nothing extra."""
+    monkeypatch.delenv("POWERSIM_RES_OFFSHORE_LOSSES", raising=False)
+    env = _captured_env(install, monkeypatch, "status", {})
+    assert "POWERSIM_RES_OFFSHORE_LOSSES" not in env

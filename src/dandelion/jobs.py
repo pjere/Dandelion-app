@@ -332,6 +332,9 @@ class JobEngine:
         # keeps that string a constant instead of something built by concatenation.
         for key, value in (params or {}).items():
             env[f"DANDELION_{key.upper()}"] = str(value)
+        # The job's own switches go last, so a stray value in the user's shell cannot turn
+        # off something the reference model depends on.
+        env.update(dict(job.env))
         clock = time.monotonic()
 
         self._group = ProcessGroup(f"job-{job_id}")

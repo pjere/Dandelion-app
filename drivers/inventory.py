@@ -95,6 +95,12 @@ class Job:
     #: where argparse rejects it outright ("unrecognized arguments"). Substitution works;
     #: appending does not.
     defaults: tuple[tuple[str, str], ...] = ()
+    #: Environment variables the job's process must see, applied LAST so they win over
+    #: whatever the user's shell happens to carry. For engine switches the owner's own
+    #: reference runs turn on: without them a Studio run is the upstream default, not the
+    #: model the author actually runs. Read by JobEngine.run at every launch — a field
+    #: nothing reads at run time is a comment, and this registry has had four of those.
+    env: tuple[tuple[str, str], ...] = ()
     #: working directory, relative to the extracted code root. Never empty: several
     #: upstream paths are cwd-relative (see anchoring.Anchor.CWD).
     cwd: str = "."
@@ -223,6 +229,26 @@ ENTSOE_CLUSTERS_RUNNER = (
     "print('  hydro    : %s' % S.ingest_hydro_storage(eng,cl,s,e,zones=Z), flush=True);"
     "print('DONE', flush=True)"
 )
+
+
+# Engine switches the owner's reference runs set, and that Studio therefore sets too.
+#
+# POWERSIM_RES_OFFSHORE_LOSSES (res_model/calibration/model.py, CalibratedRes.apply_offshore).
+# `cf_scale` is fitted on the offshore farm curve WITH its availability and wake losses, but was
+# applied to the loss-free curve, which multiplies it by ~1.12 and clips at 1.0: projected
+# offshore saturates below rated wind, and the level anchor turns that into a flat ceiling on a
+# large share of winter hours. The flag applies the losses the scale was fitted with. It is off
+# by default upstream ONLY so that the golden res/production stays unchanged
+# (res_model/DECISIONS.md:331-337). run_montecarlo.py and run_sensitivities.py set it for every
+# draw and variant, and run_reference_20y.py refuses to run without it. Left off here, a Studio
+# projection would carry the ceiling the author fixed and would not match the ensemble it is
+# compared against.
+#
+# Set on every job whose process can reach apply_offshore: res-project directly, and
+# dispatch-run, projection-20y and montecarlo through weather_shapes.default_weather_provider ->
+# res_model.projection.engine.Projector.production. montecarlo already sets it for its own
+# draws; declaring it here keeps the parent consistent and makes the choice visible.
+OFFSHORE_LOSSES: tuple[tuple[str, str], ...] = (("POWERSIM_RES_OFFSHORE_LOSSES", "1"),)
 
 
 ERREUR = (r"^\[ERREUR\]",)
@@ -555,6 +581,7 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="res-project", title="Project RES production",
+        env=OFFSHORE_LOSSES,
         requires=("res-calibrate", "weathergen-simulate"),
         produces=("res_model/output/",),
         notes=(
@@ -623,6 +650,7 @@ JOBS: tuple[Job, ...] = (
     # ---------------------------------------------------------------- projection
     Job(
         id="dispatch-run", title="Single-year projection",
+        env=OFFSHORE_LOSSES,
         kind=Kind.CONSOLE, stage=Stage.PROJECTION,
         argv=("dispatch-model", "-c", "{config}", "run", "--year", "{year}"),
         cwd="dispatch_model",
@@ -637,6 +665,7 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="projection-20y", title="20-year projection",
+        env=OFFSHORE_LOSSES,
         kind=Kind.SCRIPT, stage=Stage.PROJECTION,
         argv=("{python}", "-u", "-X", "utf8", "-W", "ignore", "scripts/run_projection_20y.py"),
         #: v0.2.0 added `--years`: an explicit comma-separated list instead of a contiguous
@@ -671,6 +700,7 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="montecarlo", title="Monte-Carlo ensemble (full chain)",
+        env=OFFSHORE_LOSSES,
         kind=Kind.SCRIPT, stage=Stage.PROJECTION,
         argv=("{python}", "-u", "-X", "utf8", "-W", "ignore", "scripts/run_montecarlo.py",
               "--draws", "{draws}", "--workers", "{workers}", "--master-seed", "{seed}"),
@@ -796,6 +826,13 @@ def validate_registry() -> list[str]:
         for check in j.preflight:
             if check not in IMPLEMENTED_PREFLIGHTS:
                 problems.append(f"{j.id}: preflight {check!r} is not implemented")
+        for name, value in j.env:
+            # A typo here would set a variable upstream never reads, and the job would run
+            # the default model with nothing to say so.
+            if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", name):
+                problems.append(f"{j.id}: env name {name!r} is not an environment variable")
+            if not isinstance(value, str):
+                problems.append(f"{j.id}: env {name} must be a string, got {value!r}")
         for pattern in j.failure_markers + j.warning_markers:
             try:
                 re.compile(pattern)

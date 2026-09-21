@@ -282,3 +282,35 @@ def test_no_dependency_cycles():
 
     for j in JOBS:
         visit(j.id, ())
+
+
+# ------------------------------------------------------------- engine switches
+
+def test_the_offshore_losses_switch_is_on_exactly_where_offshore_is_priced():
+    """Every job whose process can reach CalibratedRes.apply_offshore, and no other:
+    res-project directly; dispatch-run, projection-20y and montecarlo through
+    weather_shapes.default_weather_provider -> Projector.production. The owner's own
+    reference runs set it (run_montecarlo.py, run_sensitivities.py) or refuse to run
+    without it (run_reference_20y.py); upstream defaults it off only to keep the golden
+    res/production unchanged."""
+    carrying = {j.id for j in JOBS if dict(j.env).get("POWERSIM_RES_OFFSHORE_LOSSES") == "1"}
+    assert carrying == {"res-project", "dispatch-run", "projection-20y", "montecarlo"}
+
+
+def test_a_backtest_never_gets_projection_switches():
+    """A backtest is scored against observed history. Projection-side switches have no
+    business changing what it measures."""
+    assert not job("dispatch-backtest").env
+
+
+def test_a_malformed_switch_name_is_rejected(monkeypatch):
+    """A typo sets a variable upstream never reads, and the job runs the default model with
+    nothing to say so."""
+    import dataclasses
+
+    from drivers import inventory
+
+    bad = dataclasses.replace(job("res-project"), env=(("powersim_res_offshore", "1"),))
+    monkeypatch.setattr(inventory, "JOBS", tuple(bad if j.id == "res-project" else j
+                                                 for j in inventory.JOBS))
+    assert any("not an environment variable" in p for p in inventory.validate_registry())
