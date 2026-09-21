@@ -521,6 +521,7 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="demand-calibrate", title="Calibrate the demand model",
+        typical_seconds=139,
         kind=Kind.CONSOLE, stage=Stage.MODELS,
         argv=("demand-model", "-c", "config.yaml", "calibrate"),
         cwd="demand_model",
@@ -544,6 +545,7 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         id="res-calibrate", title="Calibrate the RES conversion chains",
+        typical_seconds=223,
         kind=Kind.CONSOLE, stage=Stage.MODELS,
         argv=("res-model", "-c", "config.yaml", "calibrate"),
         cwd="res_model",

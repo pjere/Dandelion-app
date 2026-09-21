@@ -98,3 +98,22 @@ def test_every_recorded_duration_came_from_a_real_run():
                                        "build-master", "reconcile-units")]}
     assert measured == {"backfill-entsoe": 1700, "extract-rte": 645,
                         "ingest-remit": 1025, "build-master": 100, "reconcile-units": 12}
+
+
+def test_quiet_is_only_claimed_where_it_was_observed():
+    """`quiet` drives the sentence "it prints nothing until it finishes". That has to be an
+    OBSERVATION, not an inference from a run whose output was captured rather than streamed:
+    subprocess.run(capture_output=True) buffers everything until exit, so a captured run
+    tells you nothing about whether a job streams.
+
+    The three claimed here were watched through the job engine's line callback, which
+    streams. demand-calibrate and res-calibrate were measured through a capturing runner and
+    print diagnostics of their own, so they are NOT marked quiet on that evidence."""
+    from drivers.inventory import JOBS
+
+    quiet = {j.id for j in JOBS if j.quiet}
+    assert quiet == {"ingest-remit", "build-master", "reconcile-units"}
+    for job_id in ("demand-calibrate", "res-calibrate"):
+        from drivers.inventory import job as find_job
+        assert find_job(job_id).typical_seconds, f"{job_id} should still carry its duration"
+        assert not find_job(job_id).quiet
